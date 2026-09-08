@@ -1,0 +1,12 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+runtime/
+node_modules/
+dist/
+sensor/esp32_telemetry/secrets.h
+*.joblib
+*.log
+.test-work/
+.npm-cache/

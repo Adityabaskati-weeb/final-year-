@@ -1,0 +1,19 @@
+{
+  "name": "updated-iot-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --configLoader native --host 127.0.0.1 --port 5175 --strictPort",
+    "build": "vite build --configLoader native"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "lucide-react": "^1.35.0",
+    "recharts": "^3.10.1"
+  },
+  "devDependencies": {
+    "vite": "^8.2.2"
+  }
+}

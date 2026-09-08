@@ -1,0 +1,10 @@
+.git
+.env
+.venv
+runtime
+.test-work
+frontend/node_modules
+frontend/dist
+frontend/.npm-cache
+sensor/**/secrets.h
+__pycache__

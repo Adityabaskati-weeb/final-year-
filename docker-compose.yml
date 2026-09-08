@@ -1,0 +1,16 @@
+services:
+  iot:
+    build: .
+    ports:
+      - "127.0.0.1:8020:8020"
+    environment:
+      FIREWALL_MODE: dry-run
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-local-demo-change-me}
+    volumes:
+      - iot-data:/app/runtime
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  iot-data:

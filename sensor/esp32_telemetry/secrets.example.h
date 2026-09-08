@@ -1,0 +1,6 @@
+#pragma once
+#define WIFI_SSID "YOUR_LAB_WIFI"
+#define WIFI_PASSWORD "YOUR_LAB_PASSWORD"
+#define SERVER_URL "http://YOUR_LAPTOP_LAN_IP:8020/api/telemetry"
+#define TELEMETRY_TOKEN "MATCH_IOT_TELEMETRY_TOKEN"
+#define DEVICE_ID "esp32-lab-1"
