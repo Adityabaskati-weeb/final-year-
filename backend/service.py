@@ -217,6 +217,11 @@ class Service:
             raise ValueError("Register your physical device first")
         if interface not in {i["id"] for i in self.interfaces()}:
             raise ValueError("Configure SCAPY_CAPTURE_INTERFACE, ZEEK_LOG_PATH or ZEEK_INGEST_TOKEN")
+        extractor = "scapy-lab-flow-v1" if interface == "scapy-live" else "zeek-conn-v1"
+        if not self.live_model.compatible_extractor(extractor):
+            raise ValueError(
+                f"Selected capture source uses {extractor}, but the loaded model was not trained and validated with it"
+            )
         if interface == "scapy-live":
             capture = ScapyFlowCapture(self.settings.scapy_interface,
                                        {d["ip"] for d in self.devices()})

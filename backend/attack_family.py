@@ -65,11 +65,20 @@ class AttackFamilyDetector:
             return False
 
     def status(self):
+        report = self.bundle["report"] if self.bundle else None
         return {"ready": self.bundle is not None, "error": self.error, "schema": SCHEMA,
                 "task": "attack_type", "model_sha256": self.model_sha256,
                 "response_eligible": self.bundle is not None,
                 "live_validated": self.bundle is not None,
-                "report": self.bundle["report"] if self.bundle else None}
+                "report": report,
+                "expected_extractors": sorted((report or {}).get("data_quality", {}).get("extractors", []))}
+
+    def compatible_extractor(self, extractor):
+        if not self.bundle or not isinstance(extractor, str):
+            return False
+        report = self.bundle["report"]
+        quality = report.get("data_quality", {})
+        return extractor in set(quality.get("extractors", []))
 
     def predict(self, raw):
         if not self.bundle:

@@ -102,3 +102,19 @@ class LabTests(unittest.TestCase):
         detector = AttackFamilyDetector(self.root / "missing-family-model.joblib")
         self.assertFalse(detector.status()["ready"])
         self.assertFalse(detector.status()["response_eligible"])
+
+    def test_family_attribution_requires_matching_extractor(self):
+        class Family:
+            def compatible_extractor(self, extractor):
+                return extractor == "scapy-lab-flow-v1"
+
+            def predict(self, raw):
+                return "tcp_probe", 0.99
+
+        result = classify_live_flow(
+            {"protocol": "udp", "destination_port": 53, "extractor": "zeek-conn-v1"},
+            {"prediction": "malicious", "attack_type": "unspecified", "reasons": ["binary"]},
+            Family(),
+        )
+        self.assertEqual(result["classification_source"], "binary_only")
+        self.assertEqual(result["attack_type"], "unknown_attack_pattern")

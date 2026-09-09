@@ -41,6 +41,7 @@ class SystemTests(unittest.TestCase):
         self.assertEqual(list(features(row)), FEATURES)
         self.assertEqual(len(FEATURES), 11)
         self.assertEqual(features(row), features({**row, "label": "malicious", "id.orig_h": "10.0.0.1"}))
+        self.assertEqual(connection(row)["extractor"], "zeek-conn-v1")
         self.assertEqual(binary_label(row), "normal")
         with self.assertRaises(ValueError):
             binary_label({"label": "unknown"})

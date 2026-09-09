@@ -8,6 +8,6 @@ Failed: untouched held-out evaluation detects 11/32 attacks (recall 34.375%), mi
 
 Promoted lab scope: an independently captured ESP32 session set produced 108 normal and 50 controlled private-probe flows. The lab-specific model achieved 100% recall and 0% false-positive rate on the untouched test sessions and passed hash-linked promotion. This is a topology- and extractor-specific result, not general IoT protection.
 
-Not verified/complete: generalization to independent devices/days, gateway enforcement, attack-family attribution, probability calibration, and model-driven physical alarm verification. The explicit hardware alarm test is separate from model detection.
+Not verified/complete: generalization to independent devices/days, gateway enforcement, promoted attack-family attribution, probability calibration, and model-driven physical alarm verification. The explicit hardware alarm test is separate from model detection. The live binary model is extractor-gated and limited to the registered ESP32 lab topology.
 
 Existing synthetic runtime artifacts are ignored rather than destructively deleting user data; the application no longer loads them. Old synthetic rows are hidden from current views. Expand and validate actual data before changing eligibility.

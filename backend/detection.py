@@ -75,11 +75,24 @@ class Detector:
         return dict(ready=self.bundle is not None, error=self.error, schema=SCHEMA,
                     model_sha256=self.model_sha256,
                     provenance=provenance, report=report, data_quality=data_quality,
+                    expected_extractors=sorted(data_quality.get("extractors", [])) or (["zeek-conn-v1"] if provenance == "real_iot23" else []),
                     promotion_verified=self.promotion_verified,
                     live_validated=bool(self.bundle and (self.bundle["report"].get("live_validated") is True
                                                          or self.promotion_verified)),
                     response_eligible=bool(self.bundle and self.bundle["report"].get("eligible") is True
                                            and self.promotion_verified))
+
+    def compatible_extractor(self, extractor):
+        """Keep live inference on the extractor used to train and validate it."""
+        if not self.bundle or not isinstance(extractor, str):
+            return False
+        report = self.bundle["report"]
+        quality = report.get("data_quality") or summarize_sources(
+            report.get("sources", []), self.bundle.get("provenance"))
+        expected = set(quality.get("extractors", []))
+        if not expected and self.bundle.get("provenance") == "real_iot23":
+            expected = {"zeek-conn-v1"}
+        return extractor in expected
 
     def predict(self, raw):
         values = features(raw)

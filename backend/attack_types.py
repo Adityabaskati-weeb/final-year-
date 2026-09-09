@@ -11,7 +11,7 @@ def classify_live_flow(flow: dict, result: dict, family_detector=None) -> dict:
     if result.get("prediction") != "malicious":
         return result
 
-    if family_detector is not None:
+    if family_detector is not None and family_detector.compatible_extractor(flow.get("extractor")):
         family = family_detector.predict(flow["features"])
         if family is not None and family[0] != "normal":
             attack_type, confidence = family

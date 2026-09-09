@@ -4,7 +4,7 @@ Real IoT-23 connection-log training and recorded-data analysis, with a gated Zee
 
 ## Current result
 
-A Random Forest was actually trained on nine official IoT-23 captures. The corrected untouched-holdout evaluation achieved 80.10% accuracy, **34.38% attack recall**, 1.17% precision and 19.60% false-positive rate (11 detected attacks, 21 missed, 933 false alarms). It FAILED the evaluation gate. The previous filtered-holdout report is preserved separately. Candidates are available for recorded analysis only; live decisions and ESP32 security status remain UNKNOWN. This is not a working general-purpose attack detector yet.
+A Random Forest was actually trained on nine official IoT-23 captures. The corrected untouched-holdout evaluation achieved 80.10% accuracy, **34.38% attack recall**, 1.17% precision and 19.60% false-positive rate (11 detected attacks, 21 missed, 933 false alarms). It FAILED the evaluation gate and remains restricted to recorded analysis. The separate lab model described below is the only live-approved binary path, and is explicitly limited to the registered ESP32, Wi-Fi topology and matching extractor. This is not a working general-purpose attack detector yet.
 
 The local lab path is now operational as a separate, narrow model: 158 untouched flows from the connected ESP32 lab sessions (108 normal, 50 bounded private probe flows) achieved 100% recall and 0% false-positive rate, then passed hash-linked promotion evidence. This result applies only to the registered device, this Wi-Fi topology, and the `scapy-lab-flow-v1` extractor; it is not evidence for arbitrary IoT attacks or attack-family attribution.
 

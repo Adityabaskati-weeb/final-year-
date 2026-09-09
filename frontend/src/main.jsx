@@ -597,16 +597,24 @@ function App() {
               const report = model?.report;
               const isCandidate = k === "iot_audit";
               const isAttackType = k === "attack_type";
+              const fieldDescription = isCandidate
+                ? "13 unified flow fields · pretrained artifact"
+                : isAttackType
+                  ? "11 Zeek-compatible fields · promoted families only"
+                  : model?.expected_extractors?.includes("scapy-lab-flow-v1")
+                    ? "11 Zeek-compatible fields · Scapy/Npcap lab flows"
+                    : "11 Zeek fields · completed connections";
               return (
                 <div className="model" key={k}>
                   <h3>
-                    {isCandidate ? "iot-audit TON-IoT LightGBM" : isAttackType ? "Lab attack-family classifier" : "IoT-23 binary Random Forest"}{" "}
+                    {isCandidate ? "iot-audit TON-IoT LightGBM" : isAttackType ? "Lab attack-family classifier" : "Real-data binary classifier"}{" "}
                     {badge(model?.ready ? "trained_candidate" : "unavailable")}
                   </h3>
                   <p>{model?.error || report?.scope}</p>
                   <small>
-                    Schema: {model?.schema} · {isCandidate ? "13 unified flow fields · pretrained artifact" : isAttackType ? "11 Zeek fields · promoted families only" : "11 Zeek fields · completed connections"}
+                    Schema: {model?.schema} · {fieldDescription}
                   </small>
+                  {model?.expected_extractors?.length > 0 && <small>Expected extractor: {model.expected_extractors.join(", ")}</small>}
                   <p>{isCandidate ? "Offline candidate only. TON-IoT training does not prove ESP32 or IoT-23 live performance." : isAttackType ? "Optional second-stage model. It stays disabled until independent family validation and promotion." : `Offline evaluation: ${report ? report.eligible ? "passed" : "FAILED" : "not run"}.`} Live validation: {model?.live_validated ? "passed" : "not completed"}.</p>
                   {isCandidate && <small>SHA-256 verified: {model.hash_verified ? "yes" : "no"} · Response eligible: no · Runtime sklearn: {model.runtime_sklearn_version}</small>}
                   {model?.data_quality && <small>Evidence scope: {model.data_quality.deployment_scope} · {model.data_quality.capture_count} captures · {model.data_quality.device_count} device IDs · {model.data_quality.attack_type_count} attack families</small>}

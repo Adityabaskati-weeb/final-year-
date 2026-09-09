@@ -54,7 +54,8 @@ def connection(record):
                 source_ip=str(ipaddress.ip_address(record["id.orig_h"])),
                 destination_ip=str(ipaddress.ip_address(record["id.resp_h"])),
                 source_port=ports["id.orig_p"], destination_port=ports["id.resp_p"],
-                protocol=values["proto"], features=values)
+                protocol=values["proto"], extractor=str(record.get("extractor", "zeek-conn-v1")),
+                features=values)
 
 
 def binary_label(record):
