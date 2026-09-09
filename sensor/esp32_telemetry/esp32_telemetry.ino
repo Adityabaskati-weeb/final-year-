@@ -23,6 +23,7 @@ DHT dht(DHT_PIN, DHT_TYPE);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 unsigned long sequenceNumber = 0;
 char bootId[33];
+String lastAlertId;
 
 void showStatus(const char* status, float temperature, float humidity) {
   display.clearDisplay();
@@ -107,8 +108,8 @@ void loop() {
   http.setConnectTimeout(5000);
   http.setTimeout(5000);
   http.begin(SERVER_URL);
-  const char* responseHeaders[] = {"X-IoT-Security-Status"};
-  http.collectHeaders(responseHeaders, 1);
+  const char* responseHeaders[] = {"X-IoT-Security-Status", "X-IoT-Alert-ID"};
+  http.collectHeaders(responseHeaders, 2);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-IoT-Token", TELEMETRY_TOKEN);
   String body = "{\"device_id\":\"" + String(DEVICE_ID) + "\",\"sequence\":" + String(sequenceNumber++) +
@@ -120,10 +121,16 @@ void loop() {
   String status = "DISCONNECTED";
   bool securityAlert = false;
   bool hardwareTest = false;
+  bool newSecurityAlert = false;
   if (responseCode == 202) {
     String response = http.header("X-IoT-Security-Status");
+    String alertId = http.header("X-IoT-Alert-ID");
     securityAlert = response == "SECURITY_ALERT";
     hardwareTest = response == "LAB_TEST_ALERT";
+    if (securityAlert && alertId.length() == 0) alertId = "legacy-alert";
+    newSecurityAlert = securityAlert && alertId != lastAlertId;
+    if (securityAlert) lastAlertId = alertId;
+    else if (!hardwareTest) lastAlertId = "";
     status = securityAlert ? "SECURITY ALERT" :
              hardwareTest ? "ALARM TEST" :
              response == "NORMAL" ? "NORMAL" : "UNKNOWN";
@@ -132,7 +139,7 @@ void loop() {
   }
   http.end();
 
-  if (securityAlert || hardwareTest) {
+  if (newSecurityAlert || hardwareTest) {
     runAlert(temperature, humidity, status.c_str());
   } else {
     digitalWrite(LED_PIN, LOW);

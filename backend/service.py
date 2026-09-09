@@ -87,20 +87,25 @@ class Service:
             for event in self.store.rows("events", 50, now - 30)
         )
 
-    def telemetry_security_status(self, device_id):
-        """Return the only statuses that the firmware may act on."""
+    def telemetry_security_signal(self, device_id):
+        """Return a status plus a stable ID for the current suspicious event."""
         if not self.live_model.status()["response_eligible"]:
-            return "UNKNOWN"
-        recent = [row for row in self.store.rows("detections", 200, time.time() - 30)
+            return {"status": "UNKNOWN", "alert_id": None}
+        recent = [row for row in self.store.rows("alerts", 200, time.time() - 30)
                   if row.get("device_id") == device_id and row.get("origin") == "live"
                   and row.get("prediction") == "malicious"]
         if recent:
-            return "SECURITY_ALERT"
+            latest = max(recent, key=lambda row: row.get("timestamp", 0))
+            return {"status": "SECURITY_ALERT", "alert_id": latest.get("id")}
         observations = [row for row in self.store.rows("traffic", 200, time.time() - 15)
                         if row.get("device_id") == device_id and row.get("origin") == "live"]
         if observations and all(row.get("prediction") == "benign" for row in observations):
-            return "NORMAL"
-        return "UNKNOWN"
+            return {"status": "NORMAL", "alert_id": None}
+        return {"status": "UNKNOWN", "alert_id": None}
+
+    def telemetry_security_status(self, device_id):
+        """Return only the status value for callers that do not need the ID."""
+        return self.telemetry_security_signal(device_id)["status"]
 
     async def run_sync(self, function, *args):
         job = asyncio.create_task(asyncio.to_thread(function, *args))

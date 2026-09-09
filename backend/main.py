@@ -189,8 +189,11 @@ def create_app(settings=None):
         if first:
             service.event("SENSOR_CONNECTED", device_id=device["id"], origin="live")
         lab_test = service.lab_alert_active()
-        status = "LAB_TEST_ALERT" if lab_test else service.telemetry_security_status(device["id"])
+        signal = {"status": "LAB_TEST_ALERT", "alert_id": None} if lab_test else service.telemetry_security_signal(device["id"])
+        status = signal["status"]
         response.headers["X-IoT-Security-Status"] = status
+        if signal["alert_id"]:
+            response.headers["X-IoT-Alert-ID"] = signal["alert_id"]
         return {"device_id": device["id"], "status": status}
 
     def collection_endpoint(table):

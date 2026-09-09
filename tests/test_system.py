@@ -162,8 +162,11 @@ class SystemTests(unittest.TestCase):
                 service.store.put("traffic", {"origin": "live", "schema": "zeek-conn-v1", "device_id": "sensor",
                                                "prediction": "benign"})
                 self.assertEqual(service.telemetry_security_status("sensor"), "NORMAL")
-                service.store.put("detections", {"origin": "live", "schema": "zeek-conn-v1", "device_id": "sensor",
-                                                  "prediction": "malicious"})
+                alert = service.store.put("alerts", {"origin": "live", "schema": "zeek-conn-v1", "device_id": "sensor",
+                                                       "prediction": "malicious"})
+                signal = service.telemetry_security_signal("sensor")
+                self.assertEqual(signal["status"], "SECURITY_ALERT")
+                self.assertEqual(signal["alert_id"], alert["id"])
                 self.assertEqual(service.telemetry_security_status("sensor"), "SECURITY_ALERT")
             with patch.object(service.live_model, "status", return_value={"response_eligible": False}):
                 self.assertEqual(service.telemetry_security_status("sensor"), "UNKNOWN")
