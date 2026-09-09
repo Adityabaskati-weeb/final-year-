@@ -188,13 +188,8 @@ def create_app(settings=None):
             service.store.put("readings", {**reading.model_dump(), "origin": "live"})
         if first:
             service.event("SENSOR_CONNECTED", device_id=device["id"], origin="live")
-        recent = [d for d in service.store.rows("detections", 200, time.time() - 30)
-                  if d.get("device_id") == device["id"] and d["origin"] == "live"]
-        observations = [r for r in service.store.rows("traffic", 200, time.time() - 15)
-                        if r.get("device_id") == device["id"] and r["origin"] == "live"]
-        validated = service.live_model.status()["response_eligible"]
         lab_test = service.lab_alert_active()
-        status = "LAB_TEST_ALERT" if lab_test else "SECURITY_ALERT" if recent and validated else "NORMAL" if validated and observations and observations[0]["prediction"] == "benign" else "UNKNOWN"
+        status = "LAB_TEST_ALERT" if lab_test else service.telemetry_security_status(device["id"])
         response.headers["X-IoT-Security-Status"] = status
         return {"device_id": device["id"], "status": status}
 

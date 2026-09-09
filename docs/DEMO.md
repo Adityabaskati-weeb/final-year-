@@ -30,4 +30,6 @@ Preserved firmware is under sensor/. Keep your existing wiring and verify its te
 
 The dashboard's **Hardware alarm test** is an explicit actuator check. It sends `LAB_TEST_ALERT` for a short, authenticated interval and should make the registered ESP32 show the test status and drive the LED/buzzer. This is a hardware test, not a model prediction. A model alert is separately visible in the live alert/detection tables; physical actuator response for that model alert still needs direct serial verification.
 
+For automatic model response, keep the updated sketch uploaded and keep telemetry running. When a validated live flow is classified as `malicious`, the next authenticated telemetry response carries `SECURITY_ALERT`; the ESP32 then displays `SECURITY ALERT`, blinks the LED and pulses the buzzer. The normal polling interval creates up to a few seconds of alert latency. `UNKNOWN`, unavailable models and benign traffic never activate the actuator. `LAB_TEST_ALERT` is reserved for the manual wiring check.
+
 Remaining acceptance: healthy telemetry, visible genuine connections, labelled bounded lab scenarios, model validation on independent sessions, authenticated security-status delivery, OLED/LED/buzzer transitions and recovery. No attack was launched during this integration.

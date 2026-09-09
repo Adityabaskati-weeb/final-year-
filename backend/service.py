@@ -87,6 +87,21 @@ class Service:
             for event in self.store.rows("events", 50, now - 30)
         )
 
+    def telemetry_security_status(self, device_id):
+        """Return the only statuses that the firmware may act on."""
+        if not self.live_model.status()["response_eligible"]:
+            return "UNKNOWN"
+        recent = [row for row in self.store.rows("detections", 200, time.time() - 30)
+                  if row.get("device_id") == device_id and row.get("origin") == "live"
+                  and row.get("prediction") == "malicious"]
+        if recent:
+            return "SECURITY_ALERT"
+        observations = [row for row in self.store.rows("traffic", 200, time.time() - 15)
+                        if row.get("device_id") == device_id and row.get("origin") == "live"]
+        if observations and all(row.get("prediction") == "benign" for row in observations):
+            return "NORMAL"
+        return "UNKNOWN"
+
     async def run_sync(self, function, *args):
         job = asyncio.create_task(asyncio.to_thread(function, *args))
         try:

@@ -119,17 +119,20 @@ void loop() {
   int responseCode = http.POST(body);
   String status = "DISCONNECTED";
   bool securityAlert = false;
+  bool hardwareTest = false;
   if (responseCode == 202) {
     String response = http.header("X-IoT-Security-Status");
     securityAlert = response == "SECURITY_ALERT";
+    hardwareTest = response == "LAB_TEST_ALERT";
     status = securityAlert ? "SECURITY ALERT" :
+             hardwareTest ? "ALARM TEST" :
              response == "NORMAL" ? "NORMAL" : "UNKNOWN";
   } else {
     Serial.printf("Telemetry HTTP error: %d\n", responseCode);
   }
   http.end();
 
-  if (securityAlert) {
+  if (securityAlert || hardwareTest) {
     runAlert(temperature, humidity, status.c_str());
   } else {
     digitalWrite(LED_PIN, LOW);

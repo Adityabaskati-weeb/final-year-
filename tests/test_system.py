@@ -3,6 +3,7 @@ import shutil
 import time
 import unittest
 import uuid
+from unittest.mock import patch
 from fastapi.testclient import TestClient
 from backend.config import ROOT, Settings
 from backend.features import FEATURES, features, connection, binary_label, LogParser, read_log
@@ -153,6 +154,21 @@ class SystemTests(unittest.TestCase):
             self.assertEqual(response.status_code, 202)
             self.assertEqual(response.headers["x-iot-security-status"], "UNKNOWN")
             self.assertEqual(client.post("/api/telemetry", json=body, headers={"X-IoT-Token": "test-sensor"}).status_code, 409)
+
+    def test_telemetry_status_automatically_alerts_only_for_validated_malicious_flow(self):
+        service = Service(Settings(data_dir=self.root))
+        try:
+            with patch.object(service.live_model, "status", return_value={"response_eligible": True}):
+                service.store.put("traffic", {"origin": "live", "schema": "zeek-conn-v1", "device_id": "sensor",
+                                               "prediction": "benign"})
+                self.assertEqual(service.telemetry_security_status("sensor"), "NORMAL")
+                service.store.put("detections", {"origin": "live", "schema": "zeek-conn-v1", "device_id": "sensor",
+                                                  "prediction": "malicious"})
+                self.assertEqual(service.telemetry_security_status("sensor"), "SECURITY_ALERT")
+            with patch.object(service.live_model, "status", return_value={"response_eligible": False}):
+                self.assertEqual(service.telemetry_security_status("sensor"), "UNKNOWN")
+        finally:
+            service.store.close()
 
     def test_state_uses_current_session_and_marks_observed_benign_device_normal(self):
         service = Service(Settings(data_dir=self.root))
