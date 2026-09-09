@@ -5,7 +5,10 @@ services:
       - "127.0.0.1:8020:8020"
     environment:
       FIREWALL_MODE: dry-run
-      ADMIN_TOKEN: ${ADMIN_TOKEN:-local-demo-change-me}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:?Set ADMIN_TOKEN in .env before exposing the service}
+      IOT_TELEMETRY_TOKEN: ${IOT_TELEMETRY_TOKEN:?Set IOT_TELEMETRY_TOKEN in .env}
+      ZEEK_INGEST_TOKEN: ${ZEEK_INGEST_TOKEN:-}
+      ZEEK_LOG_PATH: ${ZEEK_LOG_PATH:-}
     volumes:
       - iot-data:/app/runtime
     cap_drop:

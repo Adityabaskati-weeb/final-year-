@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
+#include <esp_system.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
@@ -21,6 +22,7 @@
 DHT dht(DHT_PIN, DHT_TYPE);
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
 unsigned long sequenceNumber = 0;
+char bootId[33];
 
 void showStatus(const char* status, float temperature, float humidity) {
   display.clearDisplay();
@@ -29,9 +31,11 @@ void showStatus(const char* status, float temperature, float humidity) {
   display.setCursor(0, 0);
   display.println("Updated IoT IDS");
   display.setCursor(0, 18);
-  display.printf("Temp: %.1f C", temperature);
+  if (isnan(temperature)) display.print("Temp: --");
+  else display.printf("Temp: %.1f C", temperature);
   display.setCursor(0, 32);
-  display.printf("Humidity: %.1f %%", humidity);
+  if (isnan(humidity)) display.print("Humidity: --");
+  else display.printf("Humidity: %.1f %%", humidity);
   display.setCursor(0, 50);
   display.print("Status: ");
   display.println(status);
@@ -48,6 +52,9 @@ bool connectWiFi(unsigned long timeoutMs = 15000) {
 
 void setup() {
   Serial.begin(115200);
+  snprintf(bootId, sizeof(bootId), "%08lx%08lx%08lx%08lx",
+           (unsigned long)esp_random(), (unsigned long)esp_random(),
+           (unsigned long)esp_random(), (unsigned long)esp_random());
   dht.begin();
   Wire.begin(SDA_PIN, SCL_PIN);
   pinMode(LED_PIN, OUTPUT);
@@ -58,7 +65,7 @@ void setup() {
     Serial.println("OLED NOT FOUND");
     while (true) delay(100);
   }
-  showStatus("CONNECTING", 0, 0);
+  showStatus("CONNECTING", NAN, NAN);
   if (connectWiFi()) {
     Serial.print("ESP32 IP: ");
     Serial.println(WiFi.localIP());
@@ -84,7 +91,7 @@ void loop() {
   float humidity = dht.readHumidity();
   if (isnan(temperature) || isnan(humidity)) {
     Serial.println("DHT11 ERROR");
-    showStatus("SENSOR ERROR", 0, 0);
+    showStatus("SENSOR ERROR", NAN, NAN);
     delay(3000);
     return;
   }
@@ -107,22 +114,22 @@ void loop() {
   String body = "{\"device_id\":\"" + String(DEVICE_ID) + "\",\"sequence\":" + String(sequenceNumber++) +
                 ",\"temperature_c\":" + String(temperature, 2) +
                 ",\"humidity_percent\":" + String(humidity, 2) +
-                ",\"device_uptime_ms\":" + String(millis()) + "}";
+                ",\"device_uptime_ms\":" + String(millis()) +
+                ",\"boot_id\":\"" + String(bootId) + "\"}";
   int responseCode = http.POST(body);
   String status = "DISCONNECTED";
-  bool labAlertTest = false;
   bool securityAlert = false;
   if (responseCode == 202) {
     String response = http.header("X-IoT-Security-Status");
     securityAlert = response == "SECURITY_ALERT";
-    status = labAlertTest ? "LAB ALERT TEST" : securityAlert ? "SECURITY ALERT" :
+    status = securityAlert ? "SECURITY ALERT" :
              response == "NORMAL" ? "NORMAL" : "UNKNOWN";
   } else {
     Serial.printf("Telemetry HTTP error: %d\n", responseCode);
   }
   http.end();
 
-  if (labAlertTest || securityAlert) {
+  if (securityAlert) {
     runAlert(temperature, humidity, status.c_str());
   } else {
     digitalWrite(LED_PIN, LOW);

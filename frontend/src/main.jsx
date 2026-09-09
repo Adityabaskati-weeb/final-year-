@@ -29,7 +29,7 @@ const time = (value) => new Date(value * 1000).toLocaleTimeString();
 const label = (value) => String(value ?? "").replaceAll("_", " ");
 const badge = (value) => (
   <span
-    className={`badge ${["malicious", "blocked", "cleanup_required"].includes(value) ? "danger" : ["benign", "online"].includes(value) ? "good" : ""}`}
+    className={`badge ${["malicious", "blocked", "block_applied_unverified", "cleanup_required", "block_failed"].includes(value) ? "danger" : ["benign", "online"].includes(value) ? "good" : ["device_offline", "unknown", "protected"].includes(value) ? "warn" : ""}`}
   >
     {label(value)}
   </span>
@@ -44,8 +44,8 @@ function App() {
   const [credential, setCredential] = useState(""),
     [interfaces, setInterfaces] = useState([]),
     [iface, setIface] = useState("");
-  const [scenario, setScenario] = useState("port_scan"),
-    [scope, setScope] = useState("demo");
+  const [captureId, setCaptureId] = useState(""),
+    [scope, setScope] = useState("live");
   async function api(path, body) {
     const response = await fetch("/api/" + path, {
       method: body === undefined ? "GET" : "POST",
@@ -156,7 +156,7 @@ function App() {
         "Source",
         "Destination",
         "Protocol",
-        "Packets/s",
+        "Orig / resp packets",
         "Prediction",
         "Risk",
       ],
@@ -166,7 +166,7 @@ function App() {
           <td className="mono">{r.source_ip}</td>
           <td className="mono">{r.destination_ip}</td>
           <td>{r.protocol}</td>
-          <td>{r.features.packets_per_second.toFixed(1)}</td>
+          <td>{r.features.orig_pkts ?? "N/A"} / {r.features.resp_pkts ?? "N/A"}</td>
           <td>{badge(r.prediction)}</td>
           <td>{r.prediction === "unknown" ? "N/A" : r.risk_score + "/100"}</td>
         </tr>
@@ -196,7 +196,7 @@ function App() {
         <div className="aside-footer">
           <span className={`dot ${connected ? "online" : ""}`} />
           {connected ? "Backend connected" : "Backend disconnected"}
-          <small>Source-window IDS / v1</small>
+          <small>Zeek connection IDS / v1</small>
         </div>
       </aside>
       <main>
@@ -214,47 +214,42 @@ function App() {
         </header>
         <div className="toolbar">
           <div className="segments">
-            {["demo", "live"].map((s) => (
+            {["dataset", "live"].map((s) => (
               <button
                 key={s}
                 aria-pressed={scope === s}
                 onClick={() => setScope(s)}
               >
-                {s === "demo" ? "Synthetic demo" : "Live network"}
+                {s === "dataset" ? "Recorded IoT-23" : "Live network"}
               </button>
             ))}
           </div>
           <div className="controls">
-            {scope === "demo" ? (
+            {scope === "dataset" ? (
               <>
                 <select
-                  aria-label="Scenario"
-                  value={scenario}
-                  onChange={(e) => setScenario(e.target.value)}
+                  aria-label="Recorded capture"
+                  value={captureId}
+                  onChange={(e) => setCaptureId(e.target.value)}
                 >
-                  {[
-                    "port_scan",
-                    "connection_flood",
-                    "udp_burst",
-                    "connection_retry",
-                    "normal",
-                  ].map((s) => (
-                    <option key={s} value={s}>
-                      {label(s)}
+                  <option value="">Choose downloaded capture</option>
+                  {(data?.captures || []).map((s) => (
+                    <option key={s.capture_id} value={s.capture_id}>
+                      {s.capture_id} ({s.split})
                     </option>
                   ))}
                 </select>
                 <button
-                  disabled={busy || !connected}
+                  disabled={busy || !connected || (!captureId && !data?.analysis)}
                   onClick={() =>
                     action(
-                      "simulation/" + (data?.simulation ? "stop" : "start"),
-                      { scenario },
+                      "analysis/" + (data?.analysis ? "stop" : "start"),
+                      { capture_id: captureId },
                     )
                   }
                 >
-                  {data?.simulation ? <Square size={16} /> : <Play size={16} />}{" "}
-                  {data?.simulation ? "Stop demo" : "Run demo"}
+                  {data?.analysis ? <Square size={16} /> : <Play size={16} />}{" "}
+                  {data?.analysis ? "Stop analysis" : "Analyze recording"}
                 </button>
               </>
             ) : (
@@ -264,7 +259,7 @@ function App() {
                   value={iface}
                   onChange={(e) => setIface(e.target.value)}
                 >
-                  <option value="">Capture interface</option>
+                  <option value="">Choose packet/flow source</option>
                   {interfaces.map((i) => (
                     <option key={i.id} value={i.id}>
                       {i.name}
@@ -283,16 +278,27 @@ function App() {
                   {data?.monitoring ? <Square size={16} /> : <Play size={16} />}{" "}
                   {data?.monitoring ? "Stop capture" : "Start capture"}
                 </button>
+                <button
+                  disabled={busy || !connected || !data?.devices?.some((device) => device.status === "online")}
+                  onClick={() => action("lab/alert-test", { seconds: 12 })}
+                  title="Send a clearly labelled hardware-only test status to the registered sensor"
+                >
+                  <AlertTriangle size={16} /> Hardware alarm test
+                </button>
               </>
             )}
           </div>
         </div>
         <div className="notice">
           <AlertTriangle size={17} />
-          {scope === "demo"
-            ? "SYNTHETIC DEMO | In-memory packets. Blocks are simulated; no network attack or OS firewall change."
-            : `LIVE NETWORK | ${data?.models?.live?.ready ? "Lab-trained model loaded. Host-only response scope." : "Observation only: no validated live model installed."}`}
+          {scope === "dataset"
+            ? "RECORDED REAL DATA | Historical IoT-23 connections, not live sensor traffic. No firewall or hardware response."
+            : `LIVE NETWORK | ${data?.models?.zeek?.response_eligible ? "Validated binary model available. Host-only response scope." : "Observation only. Live validation has not passed; automated alerts and response are disabled."}`}
         </div>
+        {scope === "live" && !interfaces.length && <div className="notice">Live capture is not configured. Set SCAPY_CAPTURE_INTERFACE for this laptop or connect an external Zeek collector. USB telemetry alone is not a network-flow source.</div>}
+        {scope === "live" && data?.capture_source?.extractor === "scapy-lab-flow-v1" && <div className="notice">Live packet capture is active for the registered lab device. The validated binary model detects malicious flows; the current controlled lab probe is attributed as TCP connection probe. Other attack families remain unclassified.</div>}
+        {scope === "live" && data?.lab_alert_test && <div className="notice" role="status">Hardware alarm test active. This is a manual actuator check, not a model detection.</div>}
+        {data?.models?.zeek?.report && !data.models.zeek.report.eligible && <div className="notice" role="status">Model evaluation FAILED. Recorded predictions are experimental; this candidate is not approved for live protection.</div>}
         {!connected && (
           <form
             className="auth"
@@ -335,15 +341,15 @@ function App() {
                   "Online devices",
                   devices.filter((d) => d.status === "online").length,
                 ],
-                ["Recent windows", traffic.length],
+                ["Recent connections", traffic.length],
                 [
                   "Recent detections",
                   traffic.filter((t) => t.prediction === "malicious").length,
                 ],
                 [
-                  scope === "demo" ? "Simulated blocks" : "Active blocks",
+                  "Applied host rules (unverified)",
                   blocks.filter((b) =>
-                    ["blocked", "simulated_block"].includes(b.status),
+                    ["blocked", "block_applied"].includes(b.status),
                   ).length,
                 ],
               ].map(([name, value]) => (
@@ -356,7 +362,7 @@ function App() {
             <section>
               <div className="section-head">
                 <h2>Traffic risk</h2>
-                <span>Current server session · latest 200 windows</span>
+                <span>Current server session · latest 200 connections</span>
               </div>
               <div className="chart">
                 <ResponsiveContainer width="100%" height="100%">
@@ -423,7 +429,7 @@ function App() {
         {tab === "Traffic" && (
           <section>
             <div className="section-head">
-              <h2>Source windows</h2>
+              <h2>Zeek connections</h2>
               <span>Capture drops: {data?.capture_dropped || 0}</span>
             </div>
             {trafficTable()}
@@ -500,6 +506,7 @@ function App() {
         {tab === "Blocklist" && (
           <section>
             <h2>Response rules</h2>
+            <p>Host-only enforcement. No gateway block has been verified. Dry-run entries: {blocks.filter((b) => ["dry_run", "simulated_block"].includes(b.status)).length}. Protected responses: {blocks.filter((b) => b.status === "protected").length}</p>
             <form
               className="device-form"
               onSubmit={(e) => {
@@ -523,9 +530,9 @@ function App() {
                   placeholder="Manual response reason"
                 />
               </label>
-              <button disabled={busy}>
+              <button disabled={busy || scope !== "live"}>
                 <Ban size={16} />
-                {scope === "demo" ? "Simulate block" : "Block source"}
+                {data?.firewall_mode === "active" ? "Block source" : "Dry-run block"}
               </button>
             </form>
             {table(
@@ -540,7 +547,7 @@ function App() {
               blocks.map((b) => (
                 <tr key={b.id}>
                   <td>{b.source_ip}</td>
-                  <td>{badge(b.status)}</td>
+                  <td>{badge(b.status === "blocked" ? "block_applied_unverified" : b.status === "simulated_block" ? "dry_run" : b.status)}<small>{b.scope || "host"} / verification not performed</small></td>
                   <td>{label(b.attack_type)}</td>
                   <td className="reason">{b.error || b.reason}</td>
                   <td>{time(b.expires_at)}</td>
@@ -570,7 +577,7 @@ function App() {
                   <div>
                     <strong>{label(e.kind)}</strong>
                     <p>
-                      {e.source_ip || e.device_id || e.scenario || ""}
+                      {e.source_ip || e.device_id || e.capture_id || ""}
                       {e.packets ? ` · ${e.packets} packets rejected` : ""}
                     </p>
                     {e.reason && <small>{e.reason}</small>}
@@ -585,23 +592,25 @@ function App() {
         {tab === "Models" && (
           <section>
             <h2>Model readiness</h2>
-            {["demo", "live"].map((k) => {
+            {["zeek", "attack_type", "iot_audit"].map((k) => {
               const model = data?.models?.[k];
               const report = model?.report;
+              const isCandidate = k === "iot_audit";
+              const isAttackType = k === "attack_type";
               return (
                 <div className="model" key={k}>
                   <h3>
-                    {k === "demo"
-                      ? "Synthetic scenario classifier"
-                      : "Live lab classifier"}{" "}
-                    {badge(model?.ready ? "ready" : "unavailable")}
+                    {isCandidate ? "iot-audit TON-IoT LightGBM" : isAttackType ? "Lab attack-family classifier" : "IoT-23 binary Random Forest"}{" "}
+                    {badge(model?.ready ? "trained_candidate" : "unavailable")}
                   </h3>
                   <p>{model?.error || report?.scope}</p>
                   <small>
-                    Schema: {model?.schema} · Random Forest · 13 features ·
-                    five-second windows
+                    Schema: {model?.schema} · {isCandidate ? "13 unified flow fields · pretrained artifact" : isAttackType ? "11 Zeek fields · promoted families only" : "11 Zeek fields · completed connections"}
                   </small>
-                  {report && (
+                  <p>{isCandidate ? "Offline candidate only. TON-IoT training does not prove ESP32 or IoT-23 live performance." : isAttackType ? "Optional second-stage model. It stays disabled until independent family validation and promotion." : `Offline evaluation: ${report ? report.eligible ? "passed" : "FAILED" : "not run"}.`} Live validation: {model?.live_validated ? "passed" : "not completed"}.</p>
+                  {isCandidate && <small>SHA-256 verified: {model.hash_verified ? "yes" : "no"} · Response eligible: no · Runtime sklearn: {model.runtime_sklearn_version}</small>}
+                  {report && !isAttackType && <small>Train / validation / test records: {report.split_rows.train} / {report.split_rows.validation} / {report.split_rows.test}. Threshold: {report.threshold.toFixed(2)}. Confusion matrix (normal, attack): {JSON.stringify(report.confusion_matrix_normal_attack)}</small>}
+                  {report && !isAttackType && (
                     <div className="metrics">
                       {[
                         "binary_accuracy",

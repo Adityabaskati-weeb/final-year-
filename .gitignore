@@ -3,6 +3,10 @@
 __pycache__/
 *.pyc
 runtime/
+.arduino-build/
+.arduino-cache/
+.arduino-tmp/
+.arduino-user/
 node_modules/
 dist/
 sensor/esp32_telemetry/secrets.h
@@ -10,3 +14,5 @@ sensor/esp32_telemetry/secrets.h
 *.log
 .test-work/
 .npm-cache/
+evidence/
+config/lab_targets.yaml

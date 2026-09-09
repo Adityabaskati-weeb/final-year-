@@ -1,14 +1,20 @@
 import asyncio
+import hashlib
 import json
 import logging
-import queue
 import time
+import threading
 import uuid
+from pathlib import Path
 from .database import Store
 from .detection import Detector
-from .features import Packet, Windows
+from .attack_types import classify_live_flow
+from .attack_family import AttackFamilyDetector
+from .features import connection, read_log, SCHEMA
 from .firewall import ResponseEngine
-from .simulation import packets, SOURCE, TARGET, SCENARIOS
+from .zeek import Tail
+from .iot_audit_candidate import IoTAuditCandidate
+from .packet_capture import ScapyFlowCapture
 
 logger = logging.getLogger("iot.events")
 if not logger.handlers:
@@ -21,191 +27,263 @@ class Service:
         self.settings = settings
         settings.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = Store(settings.data_dir / "iot.sqlite3")
-        self.started = time.time()
-        self.run_id = str(uuid.uuid4())
-        self.demo_model = Detector(settings.data_dir / "demo-model/model.joblib", "synthetic_demo")
-        self.live_model = Detector(settings.live_model, "real_capture")
-        for name, model in (("demo", self.demo_model), ("live", self.live_model)):
-            self.store.put("models", {"id": name, **model.status()})
+        self.started, self.run_id = time.time(), str(uuid.uuid4())
+        model_path = Path(settings.live_model) if settings.live_model else None
+        if model_path is None:
+            candidates = sorted(settings.data_dir.glob("iot23-model*/model.joblib"))
+            model_path = candidates[-1] if candidates else settings.data_dir / "iot23-model/model.joblib"
+        self.live_model = Detector(model_path)
+        self.attack_type_model = AttackFamilyDetector(settings.attack_type_model)
+        self.iot_audit_model = IoTAuditCandidate(settings.data_dir / "iot-audit-pretrained/binary_lightgbm.joblib")
+        self.store.put("models", {"id": "zeek", **self.live_model.status()})
+        self.store.put("models", {"id": "attack_type", **self.attack_type_model.status()})
+        self.store.put("models", {"id": "iot-audit", **self.iot_audit_model.status()})
         self.response = ResponseEngine(self.store, settings, self.event,
-            lambda: [d["ip"] for d in self.store.rows("devices", 10000)])
-        self.streaks, self.suppression = {}, {}
-        self.demo_task = None
-        self.sniffer = None
-        self.interface = None
+            lambda: [d["ip"] for d in self.devices()], run_id=self.run_id)
+        self.suppression, self.seen, self.streaks = {}, {}, {}
+        self.process_lock = threading.Lock()
+        self.telemetry_lock = threading.Lock()
+        self.ingest_busy = False
+        self.capture_generation = 0
+        self.analysis_task = None
+        self.sniffer = None  # Capture lifecycle flag retained for API registration guards.
+        self.tail = None
+        self.packet_capture = None
         self.capture_error = None
-        self.buffer = queue.Queue(maxsize=2048)
-        self.extractor = Windows()
         self.capture_dropped = 0
+        self.last_flow_at = None
+        self.lab_alert_until = 0
         self.worker_task = None
+        self.expiry_task = None
+
+    def trigger_lab_alert(self, seconds=12):
+        self.lab_alert_until = max(self.lab_alert_until, time.time() + seconds)
+        self.event("LAB_ALERT_TEST_STARTED", origin="live", duration_seconds=seconds)
+        return {"status": "started", "duration_seconds": seconds}
+
+    def lab_alert_active(self):
+        now = time.time()
+        if self.lab_alert_until > now:
+            return True
+        return any(
+            event.get("kind") == "LAB_ALERT_TEST_STARTED"
+            and event.get("timestamp", 0) + event.get("duration_seconds", 0) > now
+            for event in self.store.rows("events", 50, now - 30)
+        )
+
+    async def run_sync(self, function, *args):
+        job = asyncio.create_task(asyncio.to_thread(function, *args))
+        try:
+            return await asyncio.shield(job)
+        except asyncio.CancelledError:
+            # Finish an in-flight database/OS operation before closing the store.
+            await job
+            raise
+
+    def devices(self):
+        return [d for d in self.store.rows("devices", 10000) if d.get("origin") == "live"]
 
     def event(self, kind, **data):
         row = self.store.put("events", {**data, "id": str(uuid.uuid4()), "timestamp": time.time(),
-                                        "kind": kind, "run_id": self.run_id})
+                           "kind": kind, "schema": SCHEMA, "run_id": self.run_id})
         logger.info(json.dumps(row))
         return row
 
-    def process(self, window, origin):
-        if len(self.streaks) > 8192:
-            self.streaks = {key: value for key, value in self.streaks.items() if value[1] >= window["window_start"] - 10}
-        if len(self.suppression) > 8192:
-            cutoff = time.time() - 30
-            self.suppression = {key: value for key, value in self.suppression.items() if value >= cutoff}
-        detector = self.demo_model if origin == "demo" else self.live_model
-        result = detector.predict(window["features"], self.settings.detection_threshold)
-        device = next((d for d in self.store.rows("devices", 10000) if d["ip"] == window["destination_ip"]), None)
-        row = self.store.put("traffic", {**window, **result, "origin": origin, "run_id": self.run_id,
-                                         "device_id": device["id"] if device else None})
-        key = (origin, row["source_ip"], row["destination_ip"])
-        prior_count, prior_time = self.streaks.get(key, (0, -100))
-        if result["prediction"] != "malicious":
-            self.streaks[key] = (0, window["window_start"])
-            return row
-        self.store.put("detections", row)
+    def process(self, raw, origin, capture_id=None):
+        with self.process_lock:
+            return self._process(raw, origin, capture_id)
+
+    def _process(self, raw, origin, capture_id=None):
+        item = connection(raw)
         now = time.time()
-        if now - self.suppression.get(key, 0) >= 30:
-            self.store.put("alerts", row)
-            self.event("ATTACK_DETECTED", **row)
-            self.suppression[key] = now
-        qualifies = result["confidence"] >= self.settings.block_threshold and result["risk_score"] >= self.settings.block_risk
-        count = prior_count + 1 if window["window_start"] - prior_time == 5 else 1
-        self.streaks[key] = (count if qualifies else 0, window["window_start"])
-        if qualifies and count >= 2:
-            try:
-                self.response.block(row["source_ip"], "; ".join(result["reasons"]), origin, result["attack_type"])
-            except ValueError as error:
-                self.event("RESPONSE_PROTECTED", source_ip=row["source_ip"], reason=str(error), origin=origin)
+        if origin not in {"live", "dataset"}:
+            raise ValueError("Synthetic input is not supported")
+        if origin == "live" and not -30 <= now - item["ended_at"] <= 120:
+            raise ValueError("Historical/future flow rejected from live ingestion")
+        key = (origin, capture_id, item["uid"], item["started_at"])
+        if key in self.seen:
+            return None
+        if len(self.seen) >= 20000:
+            self.seen = {k: v for k, v in self.seen.items() if v > now - 120}
+            if len(self.seen) >= 20000:
+                raise ValueError("Live deduplication capacity reached")
+        matches = [d for d in self.devices() if d["ip"] in (item["source_ip"], item["destination_ip"])]
+        if origin == "live" and not matches:
+            raise ValueError("Flow does not involve a registered device")
+        self.seen[key] = now
+        if origin == "live" and not self.live_model.status()["response_eligible"]:
+            result = dict(prediction="unknown", attack_type="unknown", confidence=None,
+                          attack_probability=None, risk_score=None,
+                          reasons=["Live validation has not passed; candidate model restricted to recorded analysis"])
+        else:
+            result = self.live_model.predict(item["features"])
+            if origin == "live":
+                result = classify_live_flow(item, result, self.attack_type_model)
+        row = self.store.put("traffic", {**item, **result, "origin": origin, "schema": SCHEMA,
+                  "model_sha256": self.live_model.model_sha256 if result["prediction"] != "unknown" else None,
+                  "run_id": self.run_id, "capture_id": capture_id,
+                  "device_id": matches[0]["id"] if matches and origin == "live" else None,
+                  "ground_truth": raw.get("label") if origin == "dataset" else None})
+        if origin == "live":
+            self.last_flow_at = now
+        if result["prediction"] == "malicious":
+            self.store.put("detections", row)
+            alert_key = (origin, item["source_ip"], item["destination_ip"])
+            if now - self.suppression.get(alert_key, 0) >= 30:
+                self.store.put("alerts", row)
+                self.event("ATTACK_DETECTED", **row)
+                self.suppression[alert_key] = now
+            # Dataset rows can never affect hardware or the OS firewall.
+            if origin == "live" and self.live_model.status()["response_eligible"]:
+                inbound = any(d["ip"] == item["destination_ip"] for d in matches)
+                qualifies = result["confidence"] >= self.settings.block_threshold and result["risk_score"] >= self.settings.block_risk
+                count, last = self.streaks.get(alert_key, (0, 0))
+                count = count + 1 if now - last <= 30 else 1
+                self.streaks[alert_key] = (count if qualifies else 0, now)
+                if inbound and qualifies and count >= 2:
+                    try:
+                        self.response.block(item["source_ip"], "; ".join(result["reasons"]), "live", result["attack_type"])
+                    except ValueError as error:
+                        self.response.record_protected(
+                            item["source_ip"],
+                            "; ".join(result["reasons"]),
+                            result["attack_type"],
+                            str(error),
+                        )
+        if len(self.suppression) > 5000:
+            self.suppression = {k: v for k, v in self.suppression.items() if v > now - 30}
         return row
 
-    async def demo(self, scenario):
-        self.store.put("devices", dict(id="demo-sensor", name="Virtual temperature sensor", ip=TARGET,
-                       type="Synthetic", origin="demo", last_seen=time.time()))
-        old = self.store.get("blocks", "demo:" + SOURCE)
-        if old:
-            self.response.unblock(old["id"])
-        self.streaks = {k: v for k, v in self.streaks.items() if k[0] != "demo"}
-        self.suppression = {k: v for k, v in self.suppression.items() if k[0] != "demo"}
-        self.event("SENSOR_CONNECTED", device_id="demo-sensor", origin="demo")
-        extractor = Windows()
-        start = int(time.time() // 5) * 5
+    def captures(self):
+        manifest = self.settings.data_dir / "iot23/manifest.json"
+        if not manifest.exists():
+            return []
+        return json.loads(manifest.read_text(encoding="utf-8"))
+
+    async def analyze(self, capture_id):
         try:
-            for index in range(10):
-                pattern = "normal" if index < 3 else scenario
-                if index == 3:
-                    self.event("ATTACK_STARTED", origin="demo", scenario=scenario)
-                device = self.store.get("devices", "demo-sensor")
-                self.store.put("devices", {**device, "last_seen": time.time()})
-                self.store.put("readings", dict(device_id="demo-sensor", temperature=28 + index / 10,
-                               humidity=55, origin="demo"))
-                rejected = 0
-                for packet in packets(pattern, start + index * 5, 91000 + index):
-                    if self.response.denied_demo(packet.source):
-                        rejected += 1
-                    else:
-                        for row in extractor.push(packet):
-                            self.process(row, "demo")
-                for row in extractor.flush(start + (index + 1) * 5):
-                    self.process(row, "demo")
-                if rejected:
-                    self.event("SIMULATED_TRAFFIC_REJECTED", source_ip=SOURCE, packets=rejected, origin="demo")
-                await asyncio.sleep(1)
+            entry = next((c for c in self.captures() if c["capture_id"] == capture_id), None)
+            if not entry:
+                raise ValueError("Unknown downloaded capture")
+            path = (self.settings.data_dir / "iot23" / entry["path"]).resolve()
+            if not path.is_relative_to((self.settings.data_dir / "iot23").resolve()):
+                raise ValueError("Invalid capture path")
+            with path.open("rb") as file:
+                if hashlib.file_digest(file, "sha256").hexdigest() != entry["sha256"]:
+                    raise ValueError("Dataset hash mismatch")
+            self.event("RECORDED_ANALYSIS_STARTED", origin="dataset", capture_id=capture_id)
+            for index, raw in enumerate(read_log(path)):
+                if index >= 500:
+                    break
+                await self.run_sync(self.process, raw, "dataset", capture_id)
+                await asyncio.sleep(.02)
+        except Exception as error:
+            self.event("RECORDED_ANALYSIS_FAILED", origin="dataset", reason=str(error))
         finally:
-            self.event("DEMO_STOPPED", origin="demo")
+            self.event("RECORDED_ANALYSIS_STOPPED", origin="dataset", capture_id=capture_id)
 
-    def start_demo(self, scenario):
-        if scenario not in SCENARIOS:
-            raise ValueError("Unknown scenario")
-        if self.demo_task and not self.demo_task.done():
-            raise ValueError("Demo already running")
-        if not self.demo_model.bundle:
-            raise ValueError("Train demo model first: python -m ml.train --demo")
-        self.demo_task = asyncio.create_task(self.demo(scenario))
+    def start_analysis(self, capture_id):
+        if not self.live_model.bundle:
+            raise ValueError("Train the real-data model first")
+        if self.analysis_task and not self.analysis_task.done():
+            raise ValueError("Recorded analysis already running")
+        if capture_id not in {e["capture_id"] for e in self.captures()}:
+            raise ValueError("Unknown downloaded capture")
+        self.seen = {k: v for k, v in self.seen.items() if k[0] == "live"}
+        self.analysis_task = asyncio.create_task(self.analyze(capture_id))
 
-    async def stop_demo(self):
-        if self.demo_task and not self.demo_task.done():
-            self.demo_task.cancel()
+    async def stop_analysis(self):
+        if self.analysis_task and not self.analysis_task.done():
+            self.analysis_task.cancel()
             try:
-                await self.demo_task
+                await self.analysis_task
             except asyncio.CancelledError:
                 pass
 
-    @staticmethod
-    def interfaces():
-        from scapy.all import conf
-        return [{"id": item.network_name, "name": item.description or item.name} for item in conf.ifaces.values()]
-
-    def enqueue(self, raw):
-        packet = Packet.from_scapy(raw)
-        if packet:
-            try:
-                self.buffer.put_nowait(packet)
-            except queue.Full:
-                self.capture_dropped += 1
+    def interfaces(self):
+        options = []
+        if self.settings.scapy_interface:
+            options.append({"id": "scapy-live", "name": f"Live Npcap: {self.settings.scapy_interface}"})
+        if self.settings.zeek_log:
+            options.append({"id": "zeek-log", "name": "Local Zeek JSON conn.log"})
+        if self.settings.zeek_token:
+            options.append({"id": "zeek-agent", "name": "Authenticated Zeek collector"})
+        return options
 
     async def start_capture(self, interface):
         if self.sniffer:
-            raise ValueError("Capture already running")
+            raise ValueError("Monitoring already running")
+        if not self.devices():
+            raise ValueError("Register your physical device first")
         if interface not in {i["id"] for i in self.interfaces()}:
-            raise ValueError("Unknown capture interface")
-        targets = [d["ip"] for d in self.store.rows("devices", 10000) if d.get("origin") != "demo"]
-        if not targets:
-            raise ValueError("Register a physical device first")
-        from scapy.all import AsyncSniffer
-        self.extractor = Windows()
+            raise ValueError("Configure SCAPY_CAPTURE_INTERFACE, ZEEK_LOG_PATH or ZEEK_INGEST_TOKEN")
+        if interface == "scapy-live":
+            capture = ScapyFlowCapture(self.settings.scapy_interface,
+                                       {d["ip"] for d in self.devices()})
+            capture.start()
+            self.packet_capture = capture
+        self.tail = Tail(self.settings.zeek_log) if interface == "zeek-log" else None
+        self.capture_generation += 1
+        self.sniffer = interface
         self.capture_error = None
-        self.interface = interface
-        self.sniffer = AsyncSniffer(iface=interface, store=False, prn=self.enqueue,
-                                   filter=" or ".join("dst host " + ip for ip in targets))
-        self.sniffer.start()
-        await asyncio.sleep(0.3)
-        if getattr(self.sniffer, "exception", None) or not self.sniffer.running:
-            self.capture_error = str(getattr(self.sniffer, "exception", "Capture failed"))
-            self.sniffer = None
-            raise ValueError(self.capture_error)
-        self.event("CAPTURE_STARTED", interface=interface, origin="live")
+        self.event("ZEEK_MONITORING_STARTED", origin="live", interface=interface)
 
     async def stop_capture(self):
-        if self.sniffer:
-            sniffer, self.sniffer = self.sniffer, None
-            if sniffer.running:
-                await asyncio.to_thread(sniffer.stop)
-            self.event("CAPTURE_STOPPED", origin="live")
-        while not self.buffer.empty():
-            self.buffer.get_nowait()
-        self.extractor = Windows()
+        self.capture_generation += 1
+        capture, self.packet_capture = self.packet_capture, None
+        if capture:
+            capture.stop()
+        self.sniffer, self.tail = None, None
 
     async def worker(self):
         while True:
-            if self.sniffer:
-                if getattr(self.sniffer, "exception", None):
-                    self.capture_error = str(self.sniffer.exception)
-                    await self.stop_capture()
-                else:
-                    for _ in range(2048):
+            try:
+                if self.tail:
+                    for raw in self.tail.poll():
                         try:
-                            packet = self.buffer.get_nowait()
-                        except queue.Empty:
-                            break
-                        for row in self.extractor.push(packet):
-                            self.process(row, "live")
-                    if self.buffer.empty():
-                        for row in self.extractor.flush(time.time()):
-                            self.process(row, "live")
-            self.response.expire()
-            await asyncio.sleep(0.25)
+                            await self.run_sync(self.process, raw, "live")
+                        except (ValueError, KeyError, TypeError) as error:
+                            self.capture_dropped += 1
+                            self.capture_error = str(error)
+                if self.packet_capture:
+                    self.capture_error = self.packet_capture.error
+                    for raw in self.packet_capture.poll():
+                        try:
+                            await self.run_sync(self.process, raw, "live")
+                        except (ValueError, KeyError, TypeError) as error:
+                            self.capture_dropped += 1
+                            self.capture_error = str(error)
+            except Exception as error:
+                self.capture_error = str(error)
+                self.event("COLLECTOR_ERROR", origin="live", reason=str(error))
+                await self.stop_capture()
+            await asyncio.sleep(.25)
+
+    async def expire_worker(self):
+        while True:
+            try:
+                await self.run_sync(self.response.expire)
+            except Exception as error:
+                self.event("RESPONSE_EXPIRY_FAILED", origin="live", reason=str(error))
+            await asyncio.sleep(1)
 
     def state(self):
-        devices = self.store.rows("devices", 10000)
-        recent = self.store.rows("traffic", 1000, time.time() - 30)
+        devices = self.devices()
+        recent = [r for r in self.store.rows("traffic", 1000, time.time() - 30) if r.get("schema") == SCHEMA and r["origin"] == "live"]
         for device in devices:
-            device["status"] = "online" if time.time() - device.get("last_seen", 0) < 30 else "stale"
-            observations = [r for r in recent if r.get("device_id") == device["id"] and r["origin"] == device["origin"]]
-            device["current_risk"] = max((r["risk_score"] for r in observations if r["prediction"] != "unknown"), default=None)
-            device["security_status"] = "at_risk" if any(r["prediction"] == "malicious" for r in observations) else "observed_benign" if observations and all(r["prediction"] == "benign" for r in observations) else "unknown"
+            device["status"] = "online" if time.time() - device.get("last_seen", 0) < 30 else "device_offline"
+            observed = [r for r in recent if r.get("device_id") == device["id"]]
+            device["current_risk"] = max((r["risk_score"] for r in observed if r["risk_score"] is not None), default=None)
+            device["security_status"] = "at_risk" if any(r["prediction"] == "malicious" for r in observed) else "unknown"
         return dict(run_id=self.run_id, uptime=int(time.time() - self.started), devices=devices,
-            firewall_mode=self.settings.firewall_mode, monitoring=bool(self.sniffer and self.sniffer.running),
-            capture_error=self.capture_error, capture_dropped=self.capture_dropped + self.extractor.dropped,
-            simulation=bool(self.demo_task and not self.demo_task.done()),
-            models={"demo": self.demo_model.status(), "live": self.live_model.status()},
-            **{table: self.store.rows(table, 200, self.started if table in {"traffic", "detections", "alerts"} else 0)
+            firewall_mode=self.settings.firewall_mode, monitoring=bool(self.sniffer),
+            capture_error=self.capture_error, capture_dropped=self.capture_dropped, last_flow_at=self.last_flow_at,
+            capture_source=self.packet_capture.status() if self.packet_capture else None,
+            analysis=bool(self.analysis_task and not self.analysis_task.done()),
+            captures=self.captures(), models={"zeek": self.live_model.status(),
+                                               "attack_type": self.attack_type_model.status(),
+                                               "iot_audit": self.iot_audit_model.status()},
+            lab_alert_test=self.lab_alert_active(),
+            **{table: [r for r in self.store.rows(table, 1000, self.started if table in {"traffic", "detections", "alerts"} else 0)
+                       if r.get("schema") == SCHEMA or table in {"blocks", "readings"} and r.get("origin") == "live"][:200]
                for table in ("traffic", "detections", "alerts", "blocks", "events", "readings")})

@@ -1,4 +1,4 @@
-"""Host-only firewall rules. Demo actions never invoke an OS command."""
+"""Host-only firewall rules. Application success is NOT connectivity verification."""
 import hashlib
 import ipaddress
 import platform
@@ -78,8 +78,9 @@ def local_protections():
 
 
 class ResponseEngine:
-    def __init__(self, store, settings, event, device_ips, adapter=None):
+    def __init__(self, store, settings, event, device_ips, adapter=None, run_id=None):
         self.store, self.settings, self.event, self.device_ips = store, settings, event, device_ips
+        self.run_id = run_id
         self.protected = local_protections() | set(settings.protected_ips)
         self.adapter = adapter or (WindowsFirewallManager() if platform.system() == "Windows" else LinuxFirewallManager())
         self.lock = threading.RLock()
@@ -92,27 +93,43 @@ class ResponseEngine:
         return str(address)
 
     def block(self, ip, reason, origin="live", attack_type="manual"):
+        if origin != "live":
+            raise ValueError("Recorded data cannot trigger firewall response")
         with self.lock:
             ip = self.check(ip)
             key = origin + ":" + ip
             existing = self.store.get("blocks", key)
-            if existing and existing["status"] in {"blocked", "simulated_block", "cleanup_required"}:
+            if existing and existing["status"] in {"blocked", "simulated_block", "cleanup_required", "block_applied", "dry_run", "block_failed"}:
                 return existing
             active = origin == "live" and self.settings.firewall_mode == "active"
             row = dict(id=key, source_ip=ip, reason=reason, attack_type=attack_type, origin=origin,
-                       expires_at=time.time() + self.settings.block_seconds, active=active)
+                       expires_at=time.time() + self.settings.block_seconds, active=active,
+                       scope="host", verified=False, verification="not_performed", run_id=self.run_id)
             self.event("RESPONSE_TRIGGERED", **row)
             # Persist intent first, so a crash cannot silently orphan a rule.
-            self.store.put("blocks", {**row, "status": "cleanup_required" if active else "pending"})
+            self.store.put("blocks", {**row, "status": "block_requested"})
             try:
                 if active:
                     self.adapter.apply(ip, True)
-                row["status"] = "blocked" if active else "simulated_block"
+                row["status"] = "block_applied" if active else "dry_run"
             except Exception as error:
-                row.update(status="cleanup_required", error=str(error))
+                row.update(status="block_failed", error=str(error))
             result = self.store.put("blocks", row)
             self.event("FIREWALL_" + row["status"].upper(), **row)
             return result
+
+    def record_protected(self, ip, reason, attack_type, error, origin="live"):
+        """Persist a refused response without weakening collector protection."""
+        address = str(ipaddress.ip_address(ip))
+        key = "protected:" + origin + ":" + address
+        row = dict(id=key, source_ip=address, reason=reason, attack_type=attack_type,
+                   origin=origin, expires_at=time.time() + self.settings.block_seconds,
+                   active=False, scope="host", verified=False,
+                   verification="not_performed", status="protected",
+                   error=error, run_id=self.run_id)
+        result = self.store.put("blocks", row)
+        self.event("RESPONSE_PROTECTED", **result)
+        return result
 
     def unblock(self, key):
         with self.lock:
@@ -134,7 +151,3 @@ class ResponseEngine:
         for row in self.store.rows("blocks", 100000):
             if row["status"] != "released" and row["expires_at"] <= time.time():
                 self.unblock(row["id"])
-
-    def denied_demo(self, ip):
-        row = self.store.get("blocks", "demo:" + ip)
-        return bool(row and row["status"] == "simulated_block" and row["expires_at"] > time.time())

@@ -1,21 +1,33 @@
-# Demo and Sensor Setup
+# Recorded Analysis and Physical Lab
 
-## Without hardware
+## Recorded data
 
-Run `python run_demo.py`, open http://127.0.0.1:8020, stay on Synthetic demo. A virtual device produces three normal windows, then the selected generated attack pattern. Two qualifying malicious windows trigger a simulated block. Later synthetic packets are rejected by the simulator's admission gate. History records the sequence. No real packets are sent and no real firewall rules are added.
+Run the download and training commands in README, then python run_project.py --build. Open http://127.0.0.1:8020 and select Recorded IoT-23, a capture and Analyze. Analysis is bounded to 500 records per run. This shows genuine historical dataset connections, not an attack on the connected sensor. The current model FAILED its held-out test; display that limitation during presentation.
 
-Open Devices for synthetic readings, Traffic for actual model outputs, Blocklist for simulated rule expiry/release, History for rejected packet counts and Models for the evaluation report. Select normal and rerun to check the benign case. Live network is a separate view; it must not show demo output as real detections.
+## Live collector
 
-## ESP32 reconnection
+Use a Linux host with Zeek installed at a point that can see your authorized lab traffic. For example, from a dedicated log directory:
 
-Preserved pins: DHT11 GPIO4; OLED SDA21/SCL22 address 0x3C; LED15; buzzer19. Use suitable resistors/drivers and common ground. A motor is not driven by this firmware; do not connect one directly to GPIO. MPU6050 readings are not implemented in the preserved sketch.
+```sh
+sudo zeek -i YOUR_LAB_INTERFACE LogAscii::use_json=T
+```
 
-Libraries: DHT sensor library (and Adafruit Unified Sensor dependency), Adafruit GFX, Adafruit SSD1306; Espressif ESP32 board core. Copy secrets.example.h to secrets.h locally, set Wi-Fi, device ID and laptop LAN URL `http://LAPTOP_IP:8020/api/telemetry`. Match IOT_TELEMETRY_TOKEN in backend .env. Never commit secrets.h.
+Check the actual generated JSON conn.log and packet visibility. Collector/interface permissions and deployment are environment-specific. On Windows, an ESP32 USB connection does not provide these network flows.
 
-Start backend with `python -m uvicorn backend.main:create_app --factory --host 0.0.0.0 --port 8020`. Permit TCP8020 only from your sensor/private lab subnet. Register the **ESP32 IP**, not the laptop IP, in the Live network Devices tab. Device ID must match firmware. Source IP registration assumes no reverse proxy/NAT in this lab connection.
+Either configure ZEEK_LOG_PATH to a locally readable live JSON conn.log, or configure the same secret ZEEK_INGEST_TOKEN on backend and forwarder:
 
-The endpoint returns 202 and X-IoT-Security-Status. UNKNOWN means telemetry was accepted without recent validated benign classification. SECURITY_ALERT requires a real-origin model detection for that device within 30 seconds. Synthetic demo events never activate hardware. Normal telemetry or loss of connection is not an attack. The OLED/LED/buzzer loop is preserved with bounded pulses; firmware has not been uploaded or physically verified in this implementation session.
+```sh
+python scripts/forward_zeek.py --server http://BACKEND_LAN_IP:8020 --log /path/to/conn.log
+```
 
-## Physical acceptance still required
+Use an isolated trusted lab or HTTPS transport; do not expose plain HTTP tokens to public networks. Configure a nonempty ADMIN_TOKEN before binding beyond loopback. Start the backend with --host 0.0.0.0 only when LAN access is needed and firewall access is appropriately restricted.
 
-Check firmware compilation/upload, Wi-Fi, telemetry 202, correct IP identity, capture visibility, labelled independent-PCAP training, recent live predictions, alarm activation and recovery. An isolated laptop-only synthetic demo proves software integration, not these hardware results. For blocking third-party traffic to a sensor, add/test a gateway forwarding enforcement design before claiming prevention.
+Register the ESP32's current Wi-Fi IP, select **Live Npcap** and explicitly start capture. Historical or unrelated-device records are rejected. The promoted local lab model returns `benign` for matching telemetry flows and `malicious` for the bounded private probe described in `docs/LAB_RUNBOOK.md`; its scope is only the registered device and matching extractor.
+
+## Sensor
+
+Preserved firmware is under sensor/. Keep your existing wiring and verify its telemetry URL/token against /docs. Do not flash guessed pins. USB can power/program the board; telemetry uses Wi-Fi. The OLED must not say ATTACK merely because the sensor is disconnected or a dashboard test was clicked.
+
+The dashboard's **Hardware alarm test** is an explicit actuator check. It sends `LAB_TEST_ALERT` for a short, authenticated interval and should make the registered ESP32 show the test status and drive the LED/buzzer. This is a hardware test, not a model prediction. A model alert is separately visible in the live alert/detection tables; physical actuator response for that model alert still needs direct serial verification.
+
+Remaining acceptance: healthy telemetry, visible genuine connections, labelled bounded lab scenarios, model validation on independent sessions, authenticated security-status delivery, OLED/LED/buzzer transitions and recovery. No attack was launched during this integration.

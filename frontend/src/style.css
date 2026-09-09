@@ -284,6 +284,9 @@ td small {
 .badge.good {
   color: #6cddb5;
 }
+.badge.warn {
+  color: #e5bd80;
+}
 .reason {
   color: #acb9b1;
 }

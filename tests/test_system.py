@@ -1,192 +1,184 @@
+import json
 import shutil
+import time
 import unittest
 import uuid
-from unittest.mock import patch
 from fastapi.testclient import TestClient
 from backend.config import ROOT, Settings
-from backend.database import Store
-from backend.features import Windows, vector, FEATURES, Packet
-from backend.simulation import packets, dataset, SOURCE, TARGET
+from backend.features import FEATURES, features, connection, binary_label, LogParser, read_log
 from backend.detection import Detector
-from backend.firewall import ResponseEngine, WindowsFirewallManager, LinuxFirewallManager
+from backend.service import Service
 from backend.main import create_app
-from ml.train import train
+from backend.zeek import Tail
+from backend.database import Store
+from backend.firewall import ResponseEngine, WindowsFirewallManager, LinuxFirewallManager
+from ml.train import load_manifest
+import hashlib
+
+
+def record():
+    # Values from the first official CTU-Honeypot-Capture-4-1 connection.
+    return {"ts": 1540469302.538640, "uid": "CGm6jB4dXK71ZDWUDh",
+            "id.orig_h": "192.168.1.132", "id.orig_p": 58687,
+            "id.resp_h": "216.239.35.4", "id.resp_p": 123,
+            "proto": "udp", "service": "-", "duration": .114184,
+            "orig_bytes": 48, "resp_bytes": 48, "conn_state": "SF",
+            "missed_bytes": 0, "orig_pkts": 1, "orig_ip_bytes": 76,
+            "resp_pkts": 1, "resp_ip_bytes": 76, "label": "benign"}
 
 
 class SystemTests(unittest.TestCase):
-    @classmethod
-    def setUpClass(cls):
-        cls.root = ROOT / ".test-work" / str(uuid.uuid4())
-        cls.root.mkdir(parents=True)
-        cls.report = train(dataset(), cls.root / "demo-model", "synthetic_demo")
+    def setUp(self):
+        self.root = ROOT / ".test-work" / str(uuid.uuid4())
+        self.root.mkdir(parents=True)
 
-    @classmethod
-    def tearDownClass(cls):
-        if cls.root.resolve().is_relative_to((ROOT / ".test-work").resolve()):
-            shutil.rmtree(cls.root)
+    def tearDown(self):
+        if self.root.resolve().is_relative_to((ROOT / ".test-work").resolve()):
+            shutil.rmtree(self.root)
 
-    def settings(self):
-        root = self.root / str(uuid.uuid4())
-        root.mkdir()
-        shutil.copytree(self.root / "demo-model", root / "demo-model")
-        return Settings(data_dir=root, protected_ips=("10.77.0.1",), sensor_token="test-sensor")
-
-    def window(self, scenario, start=100):
-        extractor = Windows()
-        for packet in packets(scenario, start, 8888):
-            extractor.push(packet)
-        return extractor.flush(start + 5)[0]
-
-    def test_features_and_order(self):
-        row = self.window("normal")
-        self.assertEqual(len(vector(row["features"])), 13)
-        self.assertEqual(vector(dict(reversed(list(row["features"].items())))), vector(row["features"]))
-        self.assertEqual(row["source_ip"], SOURCE)
+    def test_features_exclude_identity_and_labels(self):
+        row = record()
+        self.assertEqual(list(features(row)), FEATURES)
+        self.assertEqual(len(FEATURES), 11)
+        self.assertEqual(features(row), features({**row, "label": "malicious", "id.orig_h": "10.0.0.1"}))
+        self.assertEqual(binary_label(row), "normal")
         with self.assertRaises(ValueError):
-            vector({**row["features"], "label": 1})
+            binary_label({"label": "unknown"})
+
+    def test_missing_and_invalid_features(self):
+        row = record()
+        del row["duration"]
+        self.assertIsNone(features(row)["duration"])
         with self.assertRaises(ValueError):
-            vector({**row["features"], FEATURES[0]: float("nan")})
-
-    def test_scapy_parity(self):
-        from scapy.all import IP, TCP
-        raw = IP(src=SOURCE, dst=TARGET)/TCP(sport=4567, dport=80, flags="S")
-        raw.time = 100
-        packet = Packet.from_scapy(raw)
-        self.assertEqual(packet.source, SOURCE)
-        self.assertEqual(packet.flags, 2)
-
-    def test_inference_provenance(self):
-        detector = Detector(self.root / "demo-model/model.joblib", "synthetic_demo")
-        self.assertEqual(detector.predict(self.window("normal")["features"], .8)["prediction"], "benign")
-        self.assertEqual(detector.predict(self.window("port_scan")["features"], .8)["prediction"], "malicious")
-        self.assertFalse(Detector(self.root / "demo-model/model.joblib", "real_capture").bundle)
-        self.assertEqual(Detector(None, "real_capture").predict(self.window("normal")["features"], .8)["prediction"], "unknown")
-
-    def test_leakage_rejected(self):
-        rows = dataset()
-        rows[-1]["session"] = rows[0]["session"]
-        with self.assertRaisesRegex(ValueError, "leakage"):
-            train(rows, self.root / "invalid", "synthetic_demo")
-
-    def test_threshold_validation(self):
+            features({**row, "orig_pkts": float("nan")})
+        del row["orig_pkts"]
         with self.assertRaises(ValueError):
-            Settings(detection_threshold=.95, block_threshold=.8)
+            features(row)
         with self.assertRaises(ValueError):
-            Settings(firewall_mode="active")
-        with self.assertRaises(ValueError):
-            Settings(block_seconds=0)
+            connection({**record(), "id.resp_p": 70000})
 
-    def test_window_gap_resets_response(self):
-        app = create_app(self.settings())
-        with TestClient(app, client=("127.0.0.1",40000)):
-            service = app.state.service
-            service.process(self.window("port_scan",100),"demo")
-            service.process(self.window("port_scan",115),"demo")
-            self.assertFalse(service.response.denied_demo(SOURCE))
-            service.process(self.window("port_scan",120),"demo")
-            self.assertTrue(service.response.denied_demo(SOURCE))
+    def test_iot23_packed_label_columns(self):
+        parser = LogParser()
+        parser.parse("#fields\tts\ttunnel_parents   label   detailed-label\n")
+        row = parser.parse("1\t-   Malicious   C&C\n")
+        self.assertEqual(row["detailed-label"], "C&C")
+        self.assertEqual(binary_label(row), "attack")
 
-    def test_all_simulator_patterns(self):
-        detector = Detector(self.root / "demo-model/model.joblib", "synthetic_demo")
-        for scenario in ("port_scan","connection_flood","udp_burst","connection_retry"):
-            result = detector.predict(self.window(scenario)["features"],.8)
-            self.assertEqual(result["attack_type"],scenario)
-        with self.assertRaises(ValueError):
-            list(packets("unknown",100,1))
+    def test_tail_does_not_replay_and_waits_for_complete_line(self):
+        path = self.root / "conn.log"
+        path.write_text('{"uid":"old"}\n', encoding="utf-8")
+        tail = Tail(path)
+        self.assertEqual(tail.poll(), [])
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write('{"uid":"new"}')
+        self.assertEqual(tail.poll(), [])
+        with path.open("a", encoding="utf-8") as stream:
+            stream.write("\n")
+        self.assertEqual(tail.poll(), [{"uid": "new"}])
+        path.write_text('{}\n', encoding="utf-8")
+        self.assertEqual(tail.poll(), [{}])
 
-    def test_mock_capture_lifecycle(self):
-        class Sniffer:
-            running = False
-            exception = None
-            def __init__(self, **kwargs):
-                self.kwargs = kwargs
-            def start(self):
-                self.running = True
-            def stop(self):
-                self.running = False
-        app = create_app(self.settings())
-        with TestClient(app,client=("127.0.0.1",40000)) as client:
-            client.post("/api/devices",json={"id":"lab","name":"Lab","ip":TARGET})
-            with patch("backend.service.Service.interfaces",return_value=[{"id":"test","name":"test"}]), patch("scapy.all.AsyncSniffer",Sniffer):
-                self.assertEqual(client.post("/api/monitoring/start",json={"interface":"test"}).status_code,200)
-                self.assertEqual(client.post("/api/monitoring/start",json={"interface":"test"}).status_code,400)
-                self.assertEqual(client.post("/api/monitoring/stop",json={}).status_code,200)
-            self.assertFalse(app.state.service.sniffer)
+    def test_live_requires_recent_registered_connection_and_validated_model(self):
+        service = Service(Settings(data_dir=self.root))
+        try:
+            with self.assertRaises(ValueError):
+                service.process(record(), "live")
+            service.store.put("devices", {"id": "sensor", "origin": "live", "ip": "192.168.1.132"})
+            row = {**record(), "ts": time.time() - 1}
+            result = service.process(row, "live")
+            self.assertEqual(result["prediction"], "unknown")
+            self.assertEqual(service.store.rows("alerts"), [])
+            self.assertEqual(service.store.rows("blocks"), [])
+            self.assertIsNone(service.process(row, "live"))
+            with self.assertRaises(ValueError):
+                service.process(record(), "demo")
+        finally:
+            service.store.close()
 
-    def test_firewall_commands_and_protection(self):
-        self.assertEqual(len(WindowsFirewallManager().commands(SOURCE, True)), 2)
-        self.assertEqual(LinuxFirewallManager().commands(SOURCE, True)[0][0], "iptables")
-        self.assertEqual(LinuxFirewallManager().commands("2001:db8::55", True)[0][0], "ip6tables")
+    def test_lab_alert_test_is_explicit_and_does_not_create_detection(self):
+        service = Service(Settings(data_dir=self.root))
+        try:
+            result = service.trigger_lab_alert(3)
+            self.assertEqual(result["status"], "started")
+            self.assertTrue(service.lab_alert_until > time.time())
+            self.assertEqual(service.store.rows("alerts"), [])
+            self.assertEqual(service.store.rows("detections"), [])
+        finally:
+            service.store.close()
+
+    def test_api_and_no_synthetic_routes(self):
+        app = create_app(Settings(data_dir=self.root, admin_token="test"))
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/health").status_code, 200)
+            self.assertEqual(client.get("/api/system/status").status_code, 401)
+            response = client.get("/api/system/status", headers={"Authorization": "Bearer test"})
+            self.assertEqual(response.status_code, 200)
+            paths = client.get("/openapi.json").json()["paths"]
+            self.assertFalse(any("simulation" in path for path in paths))
+            self.assertIn("/api/zeek/flows", paths)
+            self.assertEqual(client.post("/api/zeek/flows", json={"records": [record()]}).status_code, 401)
+
+    def test_real_candidate_is_not_live_approved(self):
+        path = ROOT / "runtime/iot23-model/model.joblib"
+        if not path.exists():
+            self.skipTest("Download and train official data for integration test")
+        detector = Detector(path)
+        self.assertTrue(detector.status()["ready"], detector.error)
+        self.assertFalse(detector.status()["response_eligible"])
+        self.assertIn(detector.predict(record())["prediction"], {"benign", "malicious"})
+        report = json.loads(path.with_name("evaluation.json").read_text())
+        self.assertFalse(report["live_validated"])
+
+    def test_manifest_checksum_and_capture_overlap(self):
+        path = self.root / "conn.json"
+        path.write_text(json.dumps(record()) + "\n", encoding="utf-8")
+        entry = dict(path=path.name, capture_id="real-fixture", split="train",
+                     provenance="iot23_official", sha256=hashlib.sha256(path.read_bytes()).hexdigest())
+        manifest = self.root / "manifest.json"
+        manifest.write_text(json.dumps([entry, entry]), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "Repeated capture"):
+            load_manifest(manifest)
+        manifest.write_text(json.dumps([{**entry, "sha256": "invalid"}]), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "integrity"):
+            load_manifest(manifest)
+
+    def test_sensor_auth_replay_and_unknown_status(self):
+        app = create_app(Settings(data_dir=self.root, sensor_token="test-sensor"))
+        app.state.service.store.put("devices", dict(id="sensor", ip="127.0.0.1", name="test", type="ESP32", origin="live"))
+        body = dict(device_id="sensor", sequence=1, device_uptime_ms=1000, temperature_c=30, humidity_percent=50)
+        with TestClient(app, client=("127.0.0.1", 40000)) as client:
+            self.assertEqual(client.post("/api/telemetry", json=body).status_code, 401)
+            response = client.post("/api/telemetry", json=body, headers={"X-IoT-Token": "test-sensor"})
+            self.assertEqual(response.status_code, 202)
+            self.assertEqual(response.headers["x-iot-security-status"], "UNKNOWN")
+            self.assertEqual(client.post("/api/telemetry", json=body, headers={"X-IoT-Token": "test-sensor"}).status_code, 409)
+
+    def test_firewall_dry_run_protection_and_expiry(self):
+        source, target = "10.77.0.55", "10.77.0.22"
+        self.assertEqual(len(WindowsFirewallManager().commands(source, True)), 2)
+        self.assertEqual(LinuxFirewallManager().commands(source, True)[0][0], "iptables")
         with self.assertRaises(ValueError):
             WindowsFirewallManager().commands("1.2.3.4'; bad", True)
-        settings = self.settings()
-        store = Store(settings.data_dir / "test.sqlite")
-        engine = ResponseEngine(store, settings, lambda *a, **k: None, lambda: [TARGET])
-        for ip in ("127.0.0.1", "::1", TARGET, "10.77.0.1", "224.0.0.1"):
-            with self.assertRaises(ValueError):
-                engine.block(ip, "test")
-        one = engine.block(SOURCE, "test", "demo")
-        self.assertEqual(one["id"], engine.block(SOURCE, "test", "demo")["id"])
-        self.assertTrue(engine.denied_demo(SOURCE))
-        engine.unblock(one["id"])
-        self.assertFalse(engine.denied_demo(SOURCE))
-        row = engine.block(SOURCE, "expiry", "demo")
-        store.put("blocks", {**row, "expires_at": 0})
-        engine.expire()
-        self.assertEqual(store.get("blocks", row["id"])["status"], "released")
-        store.close()
-
-    def test_active_failure_not_claimed_success(self):
-        settings = self.settings()
-        settings.firewall_mode = "active"
-        class Broken:
-            def apply(self, *args):
-                raise OSError("denied")
-        store = Store(settings.data_dir / "failed.sqlite")
-        engine = ResponseEngine(store, settings, lambda *a, **k: None, lambda: [], Broken())
-        self.assertEqual(engine.block(SOURCE, "test")["status"], "cleanup_required")
-        self.assertEqual(engine.block("10.77.0.56", "test", "demo")["status"], "simulated_block")
-        store.close()
-
-    def test_api_full_demo_and_auth(self):
-        app = create_app(self.settings())
-        with TestClient(app, client=("127.0.0.1", 40000)) as client:
-            self.assertEqual(client.get("/health").status_code, 200)
-            self.assertEqual(client.post("/api/firewall/block", json={"ip":"127.0.0.1","reason":"test"}).status_code,400)
-            self.assertEqual(client.post("/api/devices",json={"id":"esp32","name":"Sensor","ip":"10.77.0.22"}).status_code,200)
-            self.assertEqual(client.post("/api/devices",json={"id":"other","name":"Sensor","ip":"10.77.0.22"}).status_code,400)
-            service = app.state.service
-            for index, scenario in enumerate(("normal", "port_scan", "port_scan")):
-                service.process(self.window(scenario, 100+index*5), "demo")
-            state = client.get("/api/system/status").json()
-            self.assertEqual(len(state["alerts"]), 1)
-            self.assertEqual(len(state["detections"]), 2)
-            self.assertEqual(state["blocks"][0]["status"], "simulated_block")
-            self.assertTrue(service.response.denied_demo(SOURCE))
-            self.assertFalse(state["models"]["live"]["ready"])
-            with client.websocket_connect("/ws/events") as ws:
-                ws.send_json({"token":""})
-                self.assertIn("devices",ws.receive_json())
-            self.assertEqual(client.post("/api/simulation/start",json={"scenario":"bad"}).status_code,400)
-            self.assertEqual(client.post("/api/simulation/start",json={"scenario":"port_scan"}).status_code,200)
-            self.assertEqual(client.post("/api/simulation/start",json={"scenario":"port_scan"}).status_code,400)
-            self.assertEqual(client.post("/api/simulation/stop",json={}).status_code,200)
-        app = create_app(self.settings())
-        with TestClient(app, client=("10.77.0.44",40000)) as client:
-            self.assertEqual(client.get("/api/system/status").status_code,401)
-
-    def test_sensor_auth_and_demo_isolation(self):
-        settings = self.settings()
-        app = create_app(settings)
-        service = app.state.service
-        service.store.put("devices",dict(id="sensor",ip="127.0.0.1",name="test",type="test",origin="live"))
-        body = dict(device_id="sensor",sequence=1,device_uptime_ms=1000,temperature_c=30,humidity_percent=50)
-        with TestClient(app, client=("127.0.0.1",40000)) as client:
-            self.assertEqual(client.post("/api/telemetry",json=body).status_code,401)
-            response = client.post("/api/telemetry",json=body,headers={"X-IoT-Token":"test-sensor"})
-            self.assertEqual(response.status_code,202)
-            self.assertEqual(response.headers["x-iot-security-status"],"UNKNOWN")
-            self.assertEqual(client.post("/api/telemetry",json=body,headers={"X-IoT-Token":"test-sensor"}).status_code,409)
+        store = Store(self.root / "firewall.sqlite")
+        try:
+            engine = ResponseEngine(store, Settings(data_dir=self.root, protected_ips=("10.77.0.1",)),
+                                    lambda *a, **k: None, lambda: [target])
+            for ip in ("127.0.0.1", "::1", target, "10.77.0.1", "224.0.0.1"):
+                with self.assertRaises(ValueError):
+                    engine.block(ip, "test")
+            protected = engine.record_protected(target, "test", "tcp_connection_probe", "protected lab host")
+            self.assertEqual(protected["status"], "protected")
+            self.assertFalse(protected["active"])
+            row = engine.block(source, "test", "live")
+            self.assertEqual(row["status"], "dry_run")
+            self.assertFalse(row["verified"])
+            self.assertEqual(row["scope"], "host")
+            self.assertEqual(row["id"], engine.block(source, "test", "live")["id"])
+            store.put("blocks", {**row, "expires_at": 0})
+            engine.expire()
+            self.assertEqual(store.get("blocks", row["id"])["status"], "released")
+        finally:
+            store.close()
 
 
 if __name__ == "__main__":

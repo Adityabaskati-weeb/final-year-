@@ -1,108 +1,109 @@
-"""Same bounded source/destination window schema for PCAP, live capture and demo."""
-from dataclasses import dataclass
+"""Shared IoT-23 TSV / Zeek JSON connection contract. No packet approximations."""
 import ipaddress
+import json
 import math
 
-SCHEMA = "source-window-v1"
-SECONDS = 5
-FEATURES = ["packets_per_second", "bytes_per_second", "packet_count", "mean_bytes",
-            "std_bytes", "syn_fraction", "rst_fraction", "ack_fraction", "udp_fraction",
-            "unique_destination_ports", "unique_source_ports", "mean_gap", "std_gap"]
+SCHEMA = "zeek-conn-v1"
+NUMERIC = ["duration", "orig_bytes", "resp_bytes", "orig_pkts", "orig_ip_bytes",
+           "resp_pkts", "resp_ip_bytes", "missed_bytes"]
+CATEGORICAL = ["proto", "service", "conn_state"]
+FEATURES = NUMERIC + CATEGORICAL
+MISSING = (None, "", "-", "(empty)")
 
 
-@dataclass(frozen=True)
-class Packet:
-    timestamp: float
-    source: str
-    destination: str
-    source_port: int = 0
-    destination_port: int = 0
-    protocol: str = "TCP"
-    size: int = 60
-    flags: int = 0
+def features(record):
+    record = {"duration": None, "orig_bytes": None, "resp_bytes": None, "service": None, **record}
+    missing = set(FEATURES) - set(record)
+    if missing:
+        raise ValueError("Missing Zeek fields: " + ", ".join(sorted(missing)))
+    result = {}
+    for name in NUMERIC:
+        value = record[name]
+        if value in MISSING:
+            result[name] = None
+        else:
+            value = float(value)
+            if not math.isfinite(value) or value < 0:
+                raise ValueError("Invalid numeric Zeek field: " + name)
+            result[name] = value
+    for name in CATEGORICAL:
+        value = record[name]
+        if value in MISSING:
+            value = "unknown"
+        if not isinstance(value, str) or len(value) > 80:
+            raise ValueError("Invalid categorical Zeek field: " + name)
+        result[name] = value
+    return result
 
-    def __post_init__(self):
-        for address in (self.source, self.destination):
-            ipaddress.ip_address(address)
-        if not math.isfinite(self.timestamp) or self.timestamp < 0 or not 0 <= self.size <= 1048576:
-            raise ValueError("Invalid timestamp or packet size")
-        if any(not 0 <= port <= 65535 for port in (self.source_port, self.destination_port)):
+
+def connection(record):
+    values = features(record)
+    ts = float(record["ts"])
+    if not math.isfinite(ts) or ts < 0:
+        raise ValueError("Invalid connection timestamp")
+    uid = str(record["uid"])
+    if not uid or len(uid) > 128:
+        raise ValueError("Invalid connection UID")
+    ports = {}
+    for key in ("id.orig_p", "id.resp_p"):
+        port = int(record[key])
+        if not 0 <= port <= 65535:
             raise ValueError("Invalid port")
-        if self.protocol not in {"TCP", "UDP", "ICMP", "OTHER"}:
-            raise ValueError("Unsupported protocol")
+        ports[key] = port
+    return dict(uid=uid, started_at=ts, ended_at=ts + (values["duration"] or 0),
+                source_ip=str(ipaddress.ip_address(record["id.orig_h"])),
+                destination_ip=str(ipaddress.ip_address(record["id.resp_h"])),
+                source_port=ports["id.orig_p"], destination_port=ports["id.resp_p"],
+                protocol=values["proto"], features=values)
 
-    @classmethod
-    def from_scapy(cls, packet):
-        from scapy.layers.inet import IP, TCP, UDP
-        from scapy.layers.inet6 import IPv6
-        ip = packet.getlayer(IP) or packet.getlayer(IPv6)
-        if ip is None:
+
+def binary_label(record):
+    label = str(record.get("label", "")).lower()
+    if label == "benign":
+        return "normal"
+    if label == "malicious":
+        return "attack"
+    raise ValueError("Unknown/missing ground-truth label")
+
+
+class LogParser:
+    def __init__(self):
+        self.fields = None
+
+    def parse(self, line):
+        if line.startswith("#separator "):
+            if line.split(" ", 1)[1].strip() != r"\x09":
+                raise ValueError("Only standard Zeek tab-separated logs supported")
             return None
-        transport = packet.getlayer(TCP) or packet.getlayer(UDP)
-        protocol = "TCP" if TCP in packet else "UDP" if UDP in packet else "ICMP" if int(getattr(ip, "proto", getattr(ip, "nh", 0))) in (1, 58) else "OTHER"
-        return cls(float(packet.time), str(ip.src), str(ip.dst),
-                   int(transport.sport) if transport else 0, int(transport.dport) if transport else 0,
-                   protocol, len(bytes(ip)), int(packet[TCP].flags) if TCP in packet else 0)
+        if line.startswith("#fields"):
+            self.fields = line.rstrip("\r\n").split("\t")[1:]
+            if self.fields and "label" in self.fields[-1] and " " in self.fields[-1]:
+                self.fields = self.fields[:-1] + self.fields[-1].split()
+            return None
+        if not line.strip() or line.startswith("#"):
+            return None
+        if line.lstrip().startswith("{"):
+            row = json.loads(line)
+            if not isinstance(row, dict):
+                raise ValueError("Expected Zeek JSON object")
+            return row
+        if not self.fields:
+            raise ValueError("TSV log missing #fields header")
+        parts = line.rstrip("\r\n").split("\t")
+        if len(parts) != len(self.fields) and len(parts) == len(self.fields) - 2:
+            parts = parts[:-1] + parts[-1].split()
+        if len(parts) != len(self.fields):
+            raise ValueError("Zeek TSV column count mismatch")
+        return dict(zip(self.fields, parts))
 
 
-class Windows:
-    def __init__(self, max_flows=4096):
-        self.rows = {}
-        self.max_flows = max_flows
-        self.dropped = 0
-        self.watermark = -1.0
-
-    def push(self, packet):
-        if packet.timestamp < self.watermark:
-            self.dropped += 1
-            return []
-        finished = self.flush(packet.timestamp)
-        start = math.floor(packet.timestamp / SECONDS) * SECONDS
-        key = (packet.source, packet.destination, packet.protocol)
-        if key not in self.rows and len(self.rows) >= self.max_flows:
-            self.dropped += 1
-            return finished
-        row = self.rows.setdefault(key, dict(start=start, n=0, total=0, total2=0,
-            syn=0, rst=0, ack=0, udp=0, sport=set(), dport=set(), gap=0, gap2=0, last=packet.timestamp))
-        gap = max(0, packet.timestamp - row["last"]) if row["n"] else 0
-        row["n"] += 1
-        row["total"] += packet.size
-        row["total2"] += packet.size ** 2
-        for name, bit in (("syn", 2), ("rst", 4), ("ack", 16)):
-            row[name] += int(bool(packet.flags & bit))
-        row["udp"] += packet.protocol == "UDP"
-        for name, port in (("sport", packet.source_port), ("dport", packet.destination_port)):
-            if len(row[name]) < 256:
-                row[name].add(port)
-        row["gap"] += gap
-        row["gap2"] += gap ** 2
-        row["last"] = packet.timestamp
-        return finished
-
-    def flush(self, now):
-        self.watermark = max(self.watermark, math.floor(now / SECONDS) * SECONDS)
-        finished = []
-        for key, row in list(self.rows.items()):
-            if row["start"] + SECONDS > now:
-                continue
-            n, total = row["n"], row["total"]
-            gap_n = max(1, n - 1)
-            mean, gap = total / n, row["gap"] / gap_n
-            values = [n / SECONDS, total / SECONDS, n, mean,
-                      math.sqrt(max(0, row["total2"] / n - mean ** 2)),
-                      row["syn"] / n, row["rst"] / n, row["ack"] / n, row["udp"] / n,
-                      len(row["dport"]), len(row["sport"]), gap,
-                      math.sqrt(max(0, row["gap2"] / gap_n - gap ** 2))]
-            finished.append(dict(source_ip=key[0], destination_ip=key[1], protocol=key[2],
-                                 window_start=row["start"], features=dict(zip(FEATURES, values))))
-            del self.rows[key]
-        return finished
-
-
-def vector(features):
-    if set(features) != set(FEATURES):
-        raise ValueError("Missing or extra features; exact schema required")
-    values = [float(features[key]) for key in FEATURES]
-    if any(not math.isfinite(value) or value < 0 for value in values):
-        raise ValueError("Features must be finite non-negative numbers")
-    return values
+def read_log(path):
+    parser = LogParser()
+    with open(path, encoding="utf-8") as stream:
+        for number, line in enumerate(stream, 1):
+            try:
+                row = parser.parse(line)
+                if row is not None:
+                    yield row
+            except (ValueError, KeyError) as error:
+                raise ValueError(f"{path}:{number}: {error}") from error

@@ -1,21 +1,15 @@
 # Architecture
 
-Single-process FastAPI owns the SQLite database, capture lifecycle and response engine. Packet callbacks only enqueue validated packet metadata into a 2,048-entry queue. The worker drains it and flushes completed windows even when traffic stops. It records dropped packets/windows. Capture is manual and restricted to registered physical destination IPs. A normal Wi-Fi client cannot see arbitrary peer traffic; use a lab mirror/gateway for that visibility.
+Training: official labelled IoT-23 logs -> shared Zeek schema -> capture-disjoint splits -> train-only preprocessing -> Random Forest -> validation threshold -> independent test report -> candidate artifact.
 
-`features.py` groups source/destination/protocol in fixed five-second windows. Counters and moments bound per-window memory, with at most 4,096 active keys and capped distinct port sets. Raw sensor values are not mixed into packet features. `detection.py` requires the exact feature contract, provenance, sklearn version and a passed evaluation report. No missing features are zero-filled.
+Recorded analysis: downloaded log -> shared schema -> candidate -> historical results -> SQLite -> REST/WebSocket -> dashboard. It never sends attack traffic or controls a physical device.
 
-`service.py` persists every classified window in traffic and malicious windows in detections. Alerts are suppressed for 30 seconds per origin/source/target. Response needs two consecutive five-second qualifying windows. Risk is rounded attack probability times 100, not a calibrated measure of damage. A type is the highest-scoring learned attack class, not a signature-confirmed exploit.
+Live: visible network traffic -> either an external Zeek collector or the explicit Scapy/Npcap lab adapter -> completed flow records -> freshness/device checks -> shared schema -> validation gate -> binary decision -> documented lab attribution -> dashboard/telemetry response. The promoted lab model can attribute the bounded TCP connection probe used in the acceptance test; other malicious flows remain `unknown_attack_pattern` until a compatible multiclass model is trained and validated.
 
-`firewall.py` handles protected IPs, dry-run, rule idempotence, TTL and release. Demo/live namespaces are separate. Partial OS failures remain `cleanup_required`, never successful blocks. Crash-persisted active intents need cleanup; graceful shutdown attempts removal. OS rules do not have an independent TTL watchdog if the process crashes: follow SECURITY.md.
+Telemetry: ESP32 -> authenticated HTTP readings -> storage/status response -> firmware display. Sensor values do not become network attack labels.
 
-SQLite stores JSON records in devices/readings/traffic/detections/alerts/blocks/events/models tables with indexed timestamps. Model readiness/report is loaded from the versioned artifact. Dashboard traffic and alert views are the latest 200 records of the current server session; history and block state persist. These are not total historical counters. Automatic database retention is not enabled: archive data periodically for long-running use.
+Start capture is explicit. Local Zeek tailing starts at EOF, skips historical content and waits for completed lines. Scapy capture applies a host filter to registered device IPs and flushes flows after a short idle period or on stop. Duplicate connection IDs/timestamps are suppressed. Completed-flow logging introduces detection latency; long-running connections may not appear immediately.
 
-## API
+Host firewall response is dry-run by default. A source that is the collector laptop, gateway or registered sensor is recorded as `protected` and is never blocked because doing so would destroy telemetry and/or the monitoring path. A real block requires a separate attack source or an explicitly configured gateway; gateway forwarding enforcement and end-to-end real sensor protection have not been implemented/validated.
 
-GET `/health`, `/api/system/status`, `/api/interfaces`, `/api/models`, `/api/devices`, `/api/readings`, `/api/traffic`, `/api/alerts`, `/api/detections`, `/api/blocklist`, `/api/history`.
-
-POST `/api/devices`, `/api/telemetry`, `/api/firewall/block`, `/api/firewall/unblock`, `/api/simulation/start`, `/api/simulation/stop`, `/api/monitoring/start`, `/api/monitoring/stop`.
-
-WS `/ws/events`: first send `{"token":""}` (or configured admin token), then receive full one-second snapshots. Reconnection replaces client state rather than duplicating alerts. Tokens are not sent in query strings.
-
-Without an admin token, management access is loopback-only. Setting ADMIN_TOKEN requires Bearer authorization for management REST and token authentication for WS. Sensor telemetry uses a separate X-IoT-Token, source-IP registration and sequence checking. HTTP is suitable only for an isolated trusted lab; use TLS and per-device identities for deployment.
+API documentation is served at /docs. Key routes: /api/system/status, /api/captures, /api/analysis/start, /api/analysis/stop, /api/zeek/flows, plus existing device/telemetry/monitoring routes. Synthetic simulation routes have been removed.
