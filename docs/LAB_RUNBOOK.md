@@ -58,6 +58,8 @@ The preserved pin mapping is unchanged. Updated source adds boot IDs to reject r
 
 Candidate training does not automatically enable live predictions. Use `build_lab_manifest.py` for capture-disjoint train/validation/test files, then `python -m ml.train` to create a `real_lab_capture` candidate. Run `validate_lab_model.py` on independent test sessions and `promote_lab_model.py` only if the exact model hash, schema, extractor and evidence meet the gates. Minimum checked counts are 20 attack and 100 normal samples, recall >=0.8 and FPR <=0.05; these are minimum gates, not proof of generalization. Training still leaves live protection disabled. No promotion record is created for a failed/unverified model. Do not hand-edit flags to pretend validation occurred. Promotion records are trusted local configuration, not cryptographic certification of truth.
 
+For legacy malicious capture metadata without an explicit family label, pass `--default-attack-type` with the label from the controlled experiment plan, for example `--default-attack-type tcp_connection_probe`. Do not use `unknown` as a training family. New captures should carry `attack_type` metadata when recorded.
+
 ## Firewall acceptance
 
 States are dry_run, block_requested, block_applied, block_failed and released. block_applied means OS command success only. verified is false until independent connectivity evidence exists; no endpoint fabricates verification. Scope is host, never gateway. No block_verified record currently exists. Legacy blocked rows are displayed as unverified applied rules.

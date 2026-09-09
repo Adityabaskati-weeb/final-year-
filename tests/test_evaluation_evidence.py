@@ -10,6 +10,7 @@ from backend.config import ROOT
 from backend.database import Store
 from ml.train import metrics, train
 from ml.scope import summarize_sources
+from scripts.build_lab_manifest import build_manifest
 from scripts.export_evidence import export_evidence
 
 
@@ -175,6 +176,50 @@ class EvidenceExportTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "synthetic/demo"):
             export_evidence(database, "run-a", "demo", root / "evidence")
         self.assertFalse((root / "evidence").exists())
+
+
+class LabManifestTests(unittest.TestCase):
+    def setUp(self):
+        self.root = ROOT / ".test-work" / ("manifest-" + str(uuid.uuid4()))
+        self.root.mkdir(parents=True)
+
+    def tearDown(self):
+        if self.root.resolve().is_relative_to((ROOT / ".test-work").resolve()):
+            shutil.rmtree(self.root)
+
+    def write_capture(self, label, attack_type=None):
+        capture = self.root / ("capture-" + label + ".jsonl")
+        capture.write_text(json.dumps({
+            "ts": 1.0, "uid": "fixture-" + label, "id.orig_h": "192.0.2.10", "id.orig_p": 50000,
+            "id.resp_h": "192.0.2.20", "id.resp_p": 80, "proto": "tcp", "service": "http",
+            "duration": 0.1, "orig_bytes": 10, "resp_bytes": 20, "conn_state": "SF",
+            "missed_bytes": 0, "orig_pkts": 1, "orig_ip_bytes": 40, "resp_pkts": 1,
+            "resp_ip_bytes": 50, "label": label,
+        }) + "\n", encoding="utf-8")
+        metadata = {
+            "provenance": "labelled_lab_capture",
+            "extractor": "scapy-lab-flow-v1",
+            "capture_id": "capture-" + label,
+            "split": "train",
+            "target": "192.0.2.10",
+            "label": label,
+            "sha256": hashlib.sha256(capture.read_bytes()).hexdigest(),
+        }
+        if attack_type:
+            metadata["attack_type"] = attack_type
+        capture.with_suffix(capture.suffix + ".json").write_text(json.dumps(metadata), encoding="utf-8")
+
+    def test_malicious_capture_requires_explicit_family_or_default(self):
+        self.write_capture("malicious")
+        with self.assertRaisesRegex(ValueError, "requires attack_type"):
+            build_manifest(self.root, self.root / "manifest.json")
+        entries = build_manifest(self.root, self.root / "manifest.json", default_attack_type="tcp_connection_probe")
+        self.assertEqual(entries[0]["attack_type"], "tcp_connection_probe")
+
+    def test_benign_capture_gets_normal_family(self):
+        self.write_capture("benign")
+        entries = build_manifest(self.root, self.root / "manifest.json")
+        self.assertEqual(entries[0]["attack_type"], "normal")
 
 
 if __name__ == "__main__":

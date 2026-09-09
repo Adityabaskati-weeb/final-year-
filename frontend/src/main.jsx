@@ -29,7 +29,7 @@ const time = (value) => new Date(value * 1000).toLocaleTimeString();
 const label = (value) => String(value ?? "").replaceAll("_", " ");
 const badge = (value) => (
   <span
-    className={`badge ${["malicious", "blocked", "block_applied_unverified", "cleanup_required", "block_failed"].includes(value) ? "danger" : ["benign", "online"].includes(value) ? "good" : ["device_offline", "unknown", "protected"].includes(value) ? "warn" : ""}`}
+    className={`badge ${["malicious", "blocked", "block_applied_unverified", "cleanup_required", "block_failed"].includes(value) ? "danger" : ["benign", "normal", "online"].includes(value) ? "good" : ["device_offline", "unknown", "protected"].includes(value) ? "warn" : ""}`}
   >
     {label(value)}
   </span>
@@ -629,7 +629,7 @@ function App() {
                     Schema: {model?.schema} · {fieldDescription}
                   </small>
                   {model?.expected_extractors?.length > 0 && <small>Expected extractor: {model.expected_extractors.join(", ")}</small>}
-                  <p>{isCandidate ? "Offline candidate only. TON-IoT training does not prove ESP32 or IoT-23 live performance." : isAttackType ? "Optional second-stage model. It stays disabled until independent family validation and promotion." : `Offline evaluation: ${report ? report.eligible ? "passed" : "FAILED" : "not run"}.`} Live validation: {model?.live_validated ? "passed" : "not completed"}.</p>
+                  <p>{isCandidate ? "Offline candidate only. TON-IoT training does not prove ESP32 or IoT-23 live performance." : isAttackType ? "Optional second-stage model. It stays disabled until independent family validation and promotion." : `Offline evaluation: ${report ? report.eligible ? "passed" : "FAILED" : "not run"}.`} Evidence gate: {model?.promotion_verified ? "promotion evidence passed" : model?.live_validated ? "reported as validated" : "not completed"}.</p>
                   {isCandidate && <small>SHA-256 verified: {model.hash_verified ? "yes" : "no"} · Response eligible: no · Runtime sklearn: {model.runtime_sklearn_version}</small>}
                   {model?.data_quality && <small>Evidence scope: {model.data_quality.deployment_scope} · {model.data_quality.capture_count} captures · {model.data_quality.device_count} device IDs · {model.data_quality.attack_type_count} attack families</small>}
                   {model?.data_quality?.warnings?.map((warning) => <small className="model-warning" key={warning}>{warning}</small>)}

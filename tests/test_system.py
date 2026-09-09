@@ -154,6 +154,26 @@ class SystemTests(unittest.TestCase):
             self.assertEqual(response.headers["x-iot-security-status"], "UNKNOWN")
             self.assertEqual(client.post("/api/telemetry", json=body, headers={"X-IoT-Token": "test-sensor"}).status_code, 409)
 
+    def test_state_uses_current_session_and_marks_observed_benign_device_normal(self):
+        service = Service(Settings(data_dir=self.root))
+        try:
+            service.store.put("devices", {"id": "sensor", "ip": "192.0.2.10", "name": "test", "type": "ESP32",
+                                          "origin": "live", "last_seen": time.time()})
+            service.store.put("events", {"run_id": "previous-run", "origin": "live", "schema": "zeek-conn-v1",
+                                         "kind": "OLD_EVENT"})
+            service.store.put("events", {"run_id": service.run_id, "origin": "live", "schema": "zeek-conn-v1",
+                                         "kind": "CURRENT_EVENT"})
+            service.store.put("events", {"run_id": "previous-run", "origin": "live", "schema": "zeek-conn-v1",
+                                         "kind": "LAB_ALERT_TEST_STARTED", "duration_seconds": 120})
+            service.store.put("traffic", {"run_id": service.run_id, "origin": "live", "schema": "zeek-conn-v1",
+                                           "device_id": "sensor", "prediction": "benign", "risk_score": 4})
+            state = service.state()
+            self.assertEqual(state["events"][0]["kind"], "CURRENT_EVENT")
+            self.assertEqual(state["devices"][0]["security_status"], "normal")
+            self.assertFalse(service.lab_alert_active())
+        finally:
+            service.store.close()
+
     def test_firewall_dry_run_protection_and_expiry(self):
         source, target = "10.77.0.55", "10.77.0.22"
         self.assertEqual(len(WindowsFirewallManager().commands(source, True)), 2)

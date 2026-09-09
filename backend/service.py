@@ -82,6 +82,7 @@ class Service:
             return True
         return any(
             event.get("kind") == "LAB_ALERT_TEST_STARTED"
+            and event.get("run_id") == self.run_id
             and event.get("timestamp", 0) + event.get("duration_seconds", 0) > now
             for event in self.store.rows("events", 50, now - 30)
         )
@@ -294,7 +295,25 @@ class Service:
             device["status"] = "online" if time.time() - device.get("last_seen", 0) < 30 else "device_offline"
             observed = [r for r in recent if r.get("device_id") == device["id"]]
             device["current_risk"] = max((r["risk_score"] for r in observed if r["risk_score"] is not None), default=None)
-            device["security_status"] = "at_risk" if any(r["prediction"] == "malicious" for r in observed) else "unknown"
+            device["security_status"] = (
+                "at_risk" if any(r["prediction"] == "malicious" for r in observed)
+                else "normal" if observed and all(r["prediction"] == "benign" for r in observed)
+                else "unknown"
+            )
+
+        def session_rows(table):
+            # Current telemetry and analytics must not inherit stale readings or
+            # timeline events from a previous backend process.
+            since = self.started if table in {"traffic", "detections", "alerts", "readings"} else 0
+            rows = self.store.rows(table, 1000, since)
+            if table in {"traffic", "detections", "alerts"}:
+                return [r for r in rows if r.get("schema") == SCHEMA][:200]
+            if table == "events":
+                return [r for r in rows if r.get("schema") == SCHEMA and r.get("run_id") == self.run_id][:200]
+            if table in {"blocks", "readings"}:
+                return [r for r in rows if r.get("origin") == "live"][:200]
+            return rows[:200]
+
         return dict(run_id=self.run_id, uptime=int(time.time() - self.started), devices=devices,
             firewall_mode=self.settings.firewall_mode, monitoring=bool(self.sniffer),
             capture_error=self.capture_error, capture_dropped=self.capture_dropped, last_flow_at=self.last_flow_at,
@@ -305,6 +324,5 @@ class Service:
                                                "iot_audit": self.iot_audit_model.status()},
             credibility=self.credibility(),
             lab_alert_test=self.lab_alert_active(),
-            **{table: [r for r in self.store.rows(table, 1000, self.started if table in {"traffic", "detections", "alerts"} else 0)
-                       if r.get("schema") == SCHEMA or table in {"blocks", "readings"} and r.get("origin") == "live"][:200]
+            **{table: session_rows(table)
                for table in ("traffic", "detections", "alerts", "blocks", "events", "readings")})
