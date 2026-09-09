@@ -67,6 +67,24 @@ python scripts/capture_lab_flows.py `
 
 Repeat with new capture IDs for validation and test. Do the same for each additional device. The recorder is passive; it does not launch traffic.
 
+For a second controlled family, the repository includes a bounded UDP probe.
+Run it only against the current allowlisted private device while a passive
+capture is active:
+
+```powershell
+python scripts/bounded_udp_probe.py `
+  --target 10.81.27.229 `
+  --port 53 `
+  --datagrams 25 `
+  --interval-ms 100 `
+  --lab-config config/lab_targets.yaml
+```
+
+This command is deliberately not run by the application. Capture separate
+`udp_probe` train/validation/test sessions with `capture_lab_flows.py`, and
+record the operator-supplied label with `--attack-type udp_probe`. Do not label
+traffic from an unobserved or unrelated experiment.
+
 ### 3. Capture controlled private-lab attack phases
 
 Run only an authorized, bounded experiment against the registered device or an isolated lab gateway. Label the phase using the attack type observed in the experiment:

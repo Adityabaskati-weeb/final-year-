@@ -1,6 +1,6 @@
 """Conservative attribution for the controlled live-lab attack patterns.
 
-The promoted live model is binary.  This module only names a pattern when the
+The promoted live model is binary. This module only names a pattern when the
 flow matches a documented lab experiment; it is not presented as a trained
 multi-class attack-family classifier.
 """
@@ -36,6 +36,17 @@ def classify_live_flow(flow: dict, result: dict, family_detector=None) -> dict:
             "reasons": [
                 *result.get("reasons", []),
                 "Lab attribution: bounded TCP connection probe against the registered private sensor",
+            ],
+        }
+
+    if protocol == "udp" and destination_port == 53:
+        return {
+            **result,
+            "attack_type": "udp_probe",
+            "classification_source": "lab_attribution",
+            "reasons": [
+                *result.get("reasons", []),
+                "Lab attribution: bounded UDP probe against the registered private sensor",
             ],
         }
 

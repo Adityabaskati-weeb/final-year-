@@ -92,11 +92,18 @@ class LabTests(unittest.TestCase):
         self.assertEqual(result["classification_source"], "lab_attribution")
 
         other = classify_live_flow(
-            {"protocol": "udp", "destination_port": 53},
+            {"protocol": "udp", "destination_port": 123},
             {"prediction": "malicious", "attack_type": "unspecified", "reasons": ["binary"]},
         )
         self.assertEqual(other["attack_type"], "unknown_attack_pattern")
         self.assertEqual(other["classification_source"], "binary_only")
+
+        udp = classify_live_flow(
+            {"protocol": "udp", "destination_port": 53},
+            {"prediction": "malicious", "attack_type": "unspecified", "reasons": ["binary"]},
+        )
+        self.assertEqual(udp["attack_type"], "udp_probe")
+        self.assertEqual(udp["classification_source"], "lab_attribution")
 
     def test_attack_family_model_is_disabled_without_promotion(self):
         detector = AttackFamilyDetector(self.root / "missing-family-model.joblib")
@@ -112,7 +119,7 @@ class LabTests(unittest.TestCase):
                 return "tcp_probe", 0.99
 
         result = classify_live_flow(
-            {"protocol": "udp", "destination_port": 53, "extractor": "zeek-conn-v1"},
+            {"protocol": "udp", "destination_port": 123, "extractor": "zeek-conn-v1"},
             {"prediction": "malicious", "attack_type": "unspecified", "reasons": ["binary"]},
             Family(),
         )

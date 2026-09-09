@@ -16,6 +16,7 @@ The local lab path is now operational as a separate, narrow model: 158 untouched
 - Extract the same 11 network-flow fields used during model training.
 - Run the promoted real lab Random Forest and classify the current lab traffic as `normal` or `malicious`.
 - Attribute the documented bounded TCP probe as `tcp_connection_probe`.
+- Attribute a separately observed bounded UDP probe as `udp_probe`; the included probe command is never run automatically.
 - Show live traffic, detections, alerts, sensor telemetry and response state in the dashboard.
 - Send an authenticated security status to the ESP32 so the OLED, LED and buzzer can indicate an alert; the hardware alarm test is available for wiring verification.
 - Record a dry-run or host-firewall response decision with an expiry and protected-device safeguards.
