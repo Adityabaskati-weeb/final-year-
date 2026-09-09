@@ -17,6 +17,7 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 
 from backend.features import FEATURES, NUMERIC, SCHEMA, binary_label, features, read_log
+from ml.scope import summarize_sources
 
 
 def matrix(rows):
@@ -116,6 +117,7 @@ def train(manifest, output, max_per_capture=100000):
         "report_version": "real-lab-attack-type-v1", "schema": SCHEMA,
         "features": FEATURES, "provenance": "real_lab_capture", "task": "attack_type",
         "classes": classes, "metrics": metrics, "sources": sources,
+        "data_quality": summarize_sources(sources, "real_lab_capture"),
         "scope": "Private lab captures with the same extractor as live inference",
         "live_validated": False, "eligible": metrics["validation"]["macro_f1"] >= 0.8,
         "trained_at": time.time(), "sklearn_version": sklearn.__version__,

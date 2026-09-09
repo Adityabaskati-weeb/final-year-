@@ -9,6 +9,7 @@ from unittest.mock import patch
 from backend.config import ROOT
 from backend.database import Store
 from ml.train import metrics, train
+from ml.scope import summarize_sources
 from scripts.export_evidence import export_evidence
 
 
@@ -49,6 +50,18 @@ class EvaluationMetricsTests(unittest.TestCase):
         self.assertIsNone(attack["pr_auc_average_precision"])
         self.assertIsNone(attack["false_positive_rate"])
         self.assertEqual(attack["false_negative_rate"], 0.5)
+
+    def test_scope_summary_does_not_overclaim_one_device_lab_data(self):
+        summary = summarize_sources([
+            {"capture_id": "normal-1", "device_id": "esp32-a", "attack_type": "normal",
+             "extractor": "scapy-lab-flow-v1"},
+            {"capture_id": "probe-1", "device_id": "esp32-a", "attack_type": "tcp_probe",
+             "extractor": "scapy-lab-flow-v1"},
+        ], "real_lab_capture")
+
+        self.assertEqual(summary["deployment_scope"], "registered_device_only")
+        self.assertEqual(summary["device_count"], 1)
+        self.assertIn("cross-device generalization", " ".join(summary["warnings"]))
 
     def test_report_contains_split_distributions_and_capture_metrics(self):
         rows = []

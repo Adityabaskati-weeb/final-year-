@@ -18,6 +18,7 @@ from sklearn.metrics import (accuracy_score, precision_score, recall_score, f1_s
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder
 from backend.features import FEATURES, NUMERIC, SCHEMA, features, binary_label, read_log
+from ml.scope import summarize_sources
 
 
 def matrix(rows):
@@ -230,6 +231,7 @@ def train(manifest, output, cap=100000):
         pipeline.predict_proba(np.array([row], dtype=object))
         latency.append((time.perf_counter() - before) * 1000)
     report = dict(test_metrics)
+    data_quality = summarize_sources(sources, model_provenance)
     report.update(report_version=("real-lab-evaluation-v1" if model_provenance == "real_lab_capture"
                                   else "real-iot23-evaluation-v2"),
         evaluation_population="untouched_capture_disjoint",
@@ -243,6 +245,7 @@ def train(manifest, output, cap=100000):
         per_capture_test_metrics=per_capture_test_metrics,
         secondary_filtered_evaluation=secondary,
         sources=sources, inference_ms_p50=float(np.median(latency)), inference_ms_p95=float(np.percentile(latency, 95)),
+        data_quality=data_quality,
         scope=("Labelled private lab captures; registered-device scope only; live promotion requires independent validation"
                if model_provenance == "real_lab_capture" else "Official IoT-23 subset; no ESP32/live validation"),
         live_validated=False,

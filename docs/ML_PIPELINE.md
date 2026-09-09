@@ -27,6 +27,12 @@ The separate local lab pipeline uses the same 11-field contract with the `scapy-
 
 An optional second-stage trainer is available as `python -m ml.train_attack_type`. It consumes the same manifest and requires explicit `attack_type` labels, at least two attack families plus `normal` in every split, and capture-disjoint evaluation. Its artifact is never loaded for live traffic unless it has independent validation evidence and a matching `promotion.json`. Until then, binary detection falls back to the documented `tcp_connection_probe` lab attribution or `unknown_attack_pattern`.
 
+Newly trained artifacts record `data_quality` coverage: independent captures,
+device IDs, attack families, and extractor identity. Run
+`python scripts/audit_model_scope.py --model <path-to-model.joblib>` before
+making a deployment claim. A model trained from one registered ESP32 remains a
+registered-device model even when its held-out score is perfect.
+
 Current outputs: runtime/iot23-model-v2-20260909/model.joblib and evaluation.json. Select the artifact explicitly with run_project.py --model. Candidate predicts normal/attack only, not attack families. Probabilities are not calibrated; explanations are descriptive, not causal. Promotion also requires typed fields and a model-hash-linked independent live-evidence record; see LAB_RUNBOOK.md.
 
 ## Next experiment

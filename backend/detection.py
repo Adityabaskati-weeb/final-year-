@@ -7,6 +7,7 @@ import joblib
 import numpy as np
 import sklearn
 from .features import FEATURES, SCHEMA, features
+from ml.scope import summarize_sources
 
 
 class Detector:
@@ -68,9 +69,12 @@ class Detector:
 
     def status(self):
         provenance = self.bundle.get("provenance", "real_iot23") if self.bundle else "real_iot23"
+        report = self.bundle["report"] if self.bundle else None
+        data_quality = (report.get("data_quality") if report else None) or summarize_sources(
+            report.get("sources", []) if report else [], provenance)
         return dict(ready=self.bundle is not None, error=self.error, schema=SCHEMA,
                     model_sha256=self.model_sha256,
-                    provenance=provenance, report=self.bundle["report"] if self.bundle else None,
+                    provenance=provenance, report=report, data_quality=data_quality,
                     promotion_verified=self.promotion_verified,
                     live_validated=bool(self.bundle and (self.bundle["report"].get("live_validated") is True
                                                          or self.promotion_verified)),
@@ -88,6 +92,6 @@ class Detector:
         attack = score >= self.bundle["report"]["threshold"]
         return dict(prediction="malicious" if attack else "benign", attack_type="unspecified" if attack else "normal",
                     confidence=score if attack else 1-score, attack_probability=score, risk_score=round(score*100),
-                    reasons=[f"IoT-23 binary classifier: attack probability {score:.3f}",
+                    reasons=[f"Real-data binary classifier: attack probability {score:.3f}",
                              "No attack-family classification or causal explanation is provided"],
                     model_scope=self.bundle["report"]["scope"])
