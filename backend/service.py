@@ -56,6 +56,21 @@ class Service:
         self.worker_task = None
         self.expiry_task = None
 
+    def credibility(self):
+        """Return the last explicit evidence snapshot; never manufacture one."""
+        path = self.settings.data_dir / "credibility/report.json"
+        if not path.is_file():
+            return {
+                "status": "not_generated",
+                "message": "Run scripts/build_credibility_report.py after collecting evidence.",
+            }
+        try:
+            report = json.loads(path.read_text(encoding="utf-8"))
+            report["status"] = "available"
+            return report
+        except (OSError, json.JSONDecodeError) as error:
+            return {"status": "invalid", "message": str(error)}
+
     def trigger_lab_alert(self, seconds=12):
         self.lab_alert_until = max(self.lab_alert_until, time.time() + seconds)
         self.event("LAB_ALERT_TEST_STARTED", origin="live", duration_seconds=seconds)
@@ -288,6 +303,7 @@ class Service:
             captures=self.captures(), models={"zeek": self.live_model.status(),
                                                "attack_type": self.attack_type_model.status(),
                                                "iot_audit": self.iot_audit_model.status()},
+            credibility=self.credibility(),
             lab_alert_test=self.lab_alert_active(),
             **{table: [r for r in self.store.rows(table, 1000, self.started if table in {"traffic", "detections", "alerts"} else 0)
                        if r.get("schema") == SCHEMA or table in {"blocks", "readings"} and r.get("origin") == "live"][:200]

@@ -86,6 +86,8 @@ For the device-specific training recipe, live detection scope, repository compar
 
 The selected published-model candidate is documented in [iot-audit candidate](docs/IOT_AUDIT_CANDIDATE.md). It is loaded and hash-verified for offline evaluation only; its TON-IoT training domain is not interchangeable with IoT-23 or live ESP32 traffic.
 
+The external reference is reproducible without committing a binary model: run `python scripts/fetch_iot_audit_model.py` to download the pinned upstream artifact and verify its SHA-256, then run `python scripts/evaluate_iot_audit_candidate.py`. Generate the presentation/audit claim ledger with `python scripts/build_credibility_report.py --output runtime/credibility/report.json --markdown runtime/credibility/report.md`; see [credibility and external reference](docs/CREDIBILITY.md). The ledger deliberately separates external offline evidence, ESP32 live scope, attack-family readiness and gateway enforcement.
+
 Continuation: [recovery audit](docs/CURRENT_STATE_AUDIT.md), [lab runbook](docs/LAB_RUNBOOK.md), [evidence export](docs/EVIDENCE.md), [repository comparison](docs/GITHUB_MODEL_AUDIT.md), [pretrained-model audit](docs/UPSTREAM_PRETRAINED_MODEL_AUDIT.md).
 
 ```powershell

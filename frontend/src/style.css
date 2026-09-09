@@ -347,6 +347,28 @@ td small {
   padding: 12px 0 25px;
   border-top: 1px solid #344038;
 }
+.credibility-panel {
+  padding: 14px 0 20px;
+  margin-bottom: 8px;
+  border-bottom: 1px solid #344038;
+}
+.credibility-panel > p {
+  color: #a7b7ad;
+  font-size: 12px;
+  line-height: 1.6;
+}
+.claim {
+  display: grid;
+  grid-template-columns: minmax(170px, 1fr) 220px minmax(0, 2fr);
+  gap: 12px;
+  align-items: baseline;
+  padding: 9px 0;
+  border-top: 1px solid #27312b;
+  font-size: 12px;
+}
+.claim small {
+  color: #a7b7ad;
+}
 .model h3 {
   display: flex;
   justify-content: space-between;
@@ -424,6 +446,10 @@ footer {
   }
   .metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .claim {
+    grid-template-columns: 1fr;
+    gap: 5px;
   }
 }
 @media (max-width: 620px) {

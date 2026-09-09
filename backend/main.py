@@ -134,6 +134,10 @@ def create_app(settings=None):
     def models():
         return service.state()["models"]
 
+    @app.get("/api/credibility", dependencies=[Depends(auth)])
+    def credibility():
+        return service.credibility()
+
     @app.get("/api/devices", dependencies=[Depends(auth)])
     def devices():
         return service.state()["devices"]

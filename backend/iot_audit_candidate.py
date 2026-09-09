@@ -22,7 +22,10 @@ from .features import features as validate_zeek_features
 
 
 SCHEMA = "iot-audit-ton-unified-v1"
+UPSTREAM_REPOSITORY = "https://github.com/emanuelepiodebernardis/iot-audit"
+UPSTREAM_COMMIT = "e0decb975e2c3d723375f3b87f0ed50cb5b73b0c"
 ARTIFACT_SHA256 = "3d113987cbaf696aef336aa398a3ce17d07a34a97473dc06f2399d232fb5d3f0"
+ARTIFACT_URL = f"https://raw.githubusercontent.com/emanuelepiodebernardis/iot-audit/{UPSTREAM_COMMIT}/models/binary_lightgbm.joblib"
 NUMERIC_FEATURES = [
     "bytes_total",
     "bytes_src",
@@ -152,6 +155,9 @@ class IoTAuditCandidate:
             "classes": ["normal", "attack"],
             "features": FEATURES,
             "provenance": "published_iot_audit_ton_iot",
+            "upstream_repository": UPSTREAM_REPOSITORY,
+            "upstream_commit": UPSTREAM_COMMIT,
+            "source_url": ARTIFACT_URL,
             "offline_only": True,
             "live_validated": False,
             "response_eligible": False,

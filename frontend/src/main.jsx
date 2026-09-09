@@ -592,6 +592,20 @@ function App() {
         {tab === "Models" && (
           <section>
             <h2>Model readiness</h2>
+            <div className="credibility-panel">
+              <div className="section-head">
+                <strong>Credibility ledger</strong>
+                <span>{data?.credibility?.status === "available" ? "Evidence snapshot available" : "Evidence snapshot not generated"}</span>
+              </div>
+              <p>{data?.credibility?.status === "available" ? `Revision ${data.credibility.repository_revision || "unavailable"}. Claims below are scoped to recorded evidence.` : data?.credibility?.message || "Run the local credibility-report command after a measured experiment."}</p>
+              {data?.credibility?.claims?.map((claim) => (
+                <div className="claim" key={claim.id}>
+                  <span>{label(claim.id)}</span>
+                  {badge(claim.status)}
+                  <small>{claim.allowed_claim}</small>
+                </div>
+              ))}
+            </div>
             {["zeek", "attack_type", "iot_audit"].map((k) => {
               const model = data?.models?.[k];
               const report = model?.report;
